@@ -49,7 +49,7 @@ if uploaded_file is not None:
     # Clean column names (strip whitespace)
     df.columns = df.columns.str.strip()
 
-    # Dictionary to store broker-carrier relationships
+  
     broker_carrier_counts = {}
     broker_carrier_lists = {}
 
@@ -69,7 +69,7 @@ if uploaded_file is not None:
         # Split carriers by comma and clean whitespace for each
         carriers = [carrier.strip() for carrier in str(carriers_value).split(',') if carrier.strip()]
 
-        # Store the count and list of carriers for each broker
+
         broker_carrier_counts[broker] = len(carriers)
         broker_carrier_lists[broker] = carriers
 
