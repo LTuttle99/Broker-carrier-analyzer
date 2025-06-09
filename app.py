@@ -16,8 +16,8 @@ st.write("Upload your Excel file to visualize the relationships between brokers 
 # --- FILE UPLOADER ---
 st.sidebar.header("Upload Data")
 uploaded_file = st.sidebar.file_uploader(
-    "Choose your 'Broker Carrier Listing.xlsx' file",
-    type=["xlsx"] # Specify accepted file types
+    "Choose your 'Broker Carrier Listing' file",
+    type=["xlsx", "csv"] # Specify accepted file types, including CSV
 )
 
 # Initialize variables to hold processed data and chart
@@ -31,16 +31,21 @@ hover_texts_sorted = []
 
 # --- Conditional execution based on file upload ---
 if uploaded_file is not None:
-    # Read the Excel file directly from the uploaded file object
+    # Determine file type and read accordingly
     try:
-        # Use io.BytesIO to ensure pandas can read the file-like object
-        df = pd.read_excel(uploaded_file)
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        elif uploaded_file.name.endswith('.xlsx'):
+            df = pd.read_excel(uploaded_file)
+        else:
+            st.sidebar.error("Unsupported file type. Please upload a .csv or .xlsx file.")
+            st.stop()
         st.sidebar.success("File uploaded and read successfully!")
     except Exception as e:
-        st.sidebar.error(f"Error reading file: {e}. Please ensure it's a valid Excel (.xlsx) file.")
+        st.sidebar.error(f"Error reading file: {e}. Please ensure it's a valid .csv or .xlsx file.")
         st.stop() # Stop execution if file can't be read or is invalid
 
-    # --- DATA PROCESSING LOGIC (from your original script) ---
+    # --- DATA PROCESSING LOGIC ---
     # Clean column names (strip whitespace)
     df.columns = df.columns.str.strip()
 
@@ -50,11 +55,13 @@ if uploaded_file is not None:
 
     # Process each row to populate broker_carrier_counts and broker_carrier_lists
     for _, row in df.iterrows():
-        broker = str(row['BROKERS']).strip() if pd.notna(row['BROKERS']) else None
+        # Using the corrected column name: 'Brokers/Carriers' 
+        broker = str(row['Brokers/Carriers']).strip() if pd.notna(row['Brokers/Carriers']) else None
         if not broker or broker.lower() in ['nan', 'none', '']:
             continue # Skip rows with invalid or empty broker names
 
-        carriers_value = row['Brokers through']
+        # Using the corrected column name: 'associates with' 
+        carriers_value = row['associates with']
         # Skip if carriers_value is NaN or contains specific noise strings
         if pd.isna(carriers_value) or str(carriers_value).strip().lower() in ['no data', 'n/a', 'aggregator', '']:
             continue
@@ -166,4 +173,4 @@ if uploaded_file is not None:
 
 # --- Initial Message when no file is uploaded ---
 else:
-    st.info("Please upload your 'Broker Carrier Listing.xlsx' file in the sidebar to begin analysis. Use the sample file if you don't have your own data ready.")
+    st.info("Please upload your 'Broker Carrier Listing' file (CSV or Excel) in the sidebar to begin analysis. Use the sample file if you don't have your own data ready.")
