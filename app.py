@@ -131,9 +131,9 @@ if uploaded_file is not None:
 
     # Update layout for the bar chart
     fig.update_layout(
-        title='Number of Carriers per Broker',
-        xaxis_title='Broker',
-        yaxis_title='Number of Carriers',
+        title='Number of Brokers per Carrier',
+        xaxis_title='Carrier',
+        yaxis_title='Number of Brokers',
         xaxis={'tickangle': 45}, # Rotate x-axis labels for readability
         height=600,
         width=1200,
@@ -149,17 +149,17 @@ if uploaded_file is not None:
 
     # --- BROKER-SPECIFIC CARRIER LIST SECTION ---
     st.header("Broker-Specific Carrier Details")
-    st.write("Select a broker from the dropdown below to see a comprehensive list of all carriers associated with them.")
+    st.write("Select a Carrier from the dropdown below to see a comprehensive list of all Brokers associated with them.")
 
     # Streamlit's selectbox for the broker details display
     table_selection = st.selectbox(
-        "Select a Broker to view its Associated Carriers:",
-        options=["Select a Broker"] + brokers_sorted, # Add a default "Select" option
+        "Select a Carrier to view its Associated Brokers:",
+        options=["Select a Carrier"] + brokers_sorted, # Add a default "Select" option
         index=0 # Default to "Select a Broker"
     )
 
     # Display carrier list based on selection
-    if table_selection != "Select a Broker":
+    if table_selection != "Select a Carrier":
         st.subheader(f"Carriers for {table_selection}")
         if table_selection in broker_carrier_lists:
             carriers = broker_carrier_lists[table_selection]
@@ -169,7 +169,7 @@ if uploaded_file is not None:
         else:
             st.warning(f"No associated carriers found for '{table_selection}'. This might be due to data cleaning or missing entries.")
     else:
-        st.info("Please select a broker from the dropdown above to view their associated carriers.")
+        st.info("Please select a Carrier from the dropdown above to view their associated Brokers.")
 
 # --- Initial Message when no file is uploaded ---
 else:
