@@ -160,7 +160,7 @@ if uploaded_file is not None:
 
     # Display carrier list based on selection
     if table_selection != "Select a Carrier":
-        st.subheader(f"Carriers for {table_selection}")
+        st.subheader(f"Brokers for {table_selection}")
         if table_selection in broker_carrier_lists:
             carriers = broker_carrier_lists[table_selection]
             # Display carriers as a markdown list in Streamlit for clear readability
