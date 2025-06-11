@@ -1,176 +1,82 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-import io # Used to handle the uploaded Excel file in memory
+import openpyxl
+from io import BytesIO
 
-# --- SET UP STREAMLIT PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="Broker-Carrier Relationship Analyzer",
-    layout="wide", # Use 'wide' layout for better visualization of the chart
-    initial_sidebar_state="expanded" # Sidebar will be open by default
-)
+st.set_page_config(page_title="Excel Table Editor", layout="wide")
+st.title("📊 Excel Named Table Editor")
 
-st.title("📊 Broker-Carrier Relationship Analyzer")
-st.write("Upload your Excel file to visualize the relationships between brokers and carriers and explore detailed lists.")
+uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx"])
 
-# --- FILE UPLOADER ---
-st.sidebar.header("Upload Data")
-uploaded_file = st.sidebar.file_uploader(
-    "Choose your 'Broker Carrier Listing' file",
-    type=["xlsx", "csv"] # Specify accepted file types, including CSV
-)
+def combine_rows(df, selected_indices):
+    if not selected_indices:
+        return df
 
-# Initialize variables to hold processed data and chart
-# These will be populated only after a file is uploaded
-df = None
-broker_carrier_counts = {}
-broker_carrier_lists = {}
-brokers_sorted = []
-counts_sorted = []
-hover_texts_sorted = []
+    selected_rows = df.loc[selected_indices]
+    combined_row = {}
 
-# --- Conditional execution based on file upload ---
-if uploaded_file is not None:
-    # Determine file type and read accordingly
-    try:
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith('.xlsx'):
-            df = pd.read_excel(uploaded_file)
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            combined_row[col] = selected_rows[col].sum()
         else:
-            st.sidebar.error("Unsupported file type. Please upload a .csv or .xlsx file.")
-            st.stop()
-        st.sidebar.success("File uploaded and read successfully!")
-    except Exception as e:
-        st.sidebar.error(f"Error reading file: {e}. Please ensure it's a valid .csv or .xlsx file.")
-        st.stop() # Stop execution if file can't be read or is invalid
+            combined_row[col] = " / ".join(selected_rows[col].astype(str))
 
-    # --- DATA PROCESSING LOGIC ---
-    # Clean column names (strip whitespace)
-    df.columns = df.columns.str.strip()
+    df = df.drop(index=selected_indices)
+    df = pd.concat([df, pd.DataFrame([combined_row])], ignore_index=True)
+    return df
 
-  
-    broker_carrier_counts = {}
-    broker_carrier_lists = {}
+def merge_columns(df, selected_columns, new_column_name):
+    if not selected_columns or len(selected_columns) < 2:
+        return df
 
-    # Process each row to populate broker_carrier_counts and broker_carrier_lists
-    for _, row in df.iterrows():
-        # Using the corrected column name: 'Brokers/Carriers' 
-        broker = str(row['Brokers/Carriers']).strip() if pd.notna(row['Brokers/Carriers']) else None
-        if not broker or broker.lower() in ['nan', 'none', '']:
-            continue # Skip rows with invalid or empty broker names
+    df[new_column_name] = df[selected_columns].astype(str).agg(" / ".join, axis=1)
+    df = df.drop(columns=selected_columns)
+    return df
 
-        # Using the corrected column name: 'associates with' 
-        carriers_value = row['associates with']
-        # Skip if carriers_value is NaN or contains specific noise strings
-        if pd.isna(carriers_value) or str(carriers_value).strip().lower() in ['no data', 'n/a', 'aggregator', '']:
-            continue
+def to_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='ModifiedTable')
+    output.seek(0)
+    return output
 
-        # Split carriers by comma and clean whitespace for each
-        carriers = [carrier.strip() for carrier in str(carriers_value).split(',') if carrier.strip()]
+if uploaded_file:
+    wb = openpyxl.load_workbook(uploaded_file, data_only=True)
+    ws = wb["Sheet1"]
+    table_names = list(ws.tables.keys())
 
+    if table_names:
+        selected_table = st.selectbox("Select a named table", table_names)
+        table = ws.tables[selected_table]
+        table_range = table.ref
+        data = ws[table_range]
+        data = [[cell.value for cell in row] for row in data]
+        df = pd.DataFrame(data[1:], columns=data[0])
 
-        broker_carrier_counts[broker] = len(carriers)
-        broker_carrier_lists[broker] = carriers
+        st.subheader("✏️ Edit Table")
+        edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
-    # Prepare data for bar chart
-    brokers = list(broker_carrier_counts.keys())
-    counts = list(broker_carrier_counts.values())
-    hover_texts = [f"Carriers: {', '.join(broker_carrier_lists[broker])}" for broker in brokers]
+        st.subheader("🔗 Combine Rows")
+        selected_rows = st.multiselect("Select rows to combine (by index)", edited_df.index.tolist())
+        if st.button("Combine Selected Rows"):
+            edited_df = combine_rows(edited_df, selected_rows)
+            st.success("Rows combined successfully!")
 
-    # Sort brokers by count (descending)
-    sorted_indices = sorted(range(len(counts)), key=lambda i: counts[i], reverse=True)
-    brokers_sorted = [brokers[i] for i in sorted_indices]
-    counts_sorted = [counts[i] for i in sorted_indices]
-    hover_texts_sorted = [hover_texts[i] for i in sorted_indices]
+        st.subheader("🧬 Merge Columns")
+        selected_cols = st.multiselect("Select columns to merge", edited_df.columns.tolist(), key="merge_cols")
+        new_col_name = st.text_input("New column name", value="MergedColumn")
+        if st.button("Merge Selected Columns"):
+            edited_df = merge_columns(edited_df, selected_cols, new_col_name)
+            st.success(f"Columns merged into '{new_col_name}'")
 
-    # --- PLOTLY CHART SECTION ---
-    st.header("Broker Carrier Counts")
-    st.write("This bar chart visualizes the number of carriers associated with each broker. Hover over a bar to see the list of carriers.")
+        st.subheader("📋 Final Table")
+        st.dataframe(edited_df, use_container_width=True)
 
-    # Streamlit's selectbox for filtering the chart
-    chart_selection = st.selectbox(
-        "Select a broker to filter the chart view:",
-        options=["All Brokers"] + brokers_sorted,
-        index=0 # Default to 'All Brokers' when the app loads
-    )
-
-    # Prepare data for the selected chart view
-    chart_brokers = []
-    chart_counts = []
-    chart_hover_texts = []
-
-    if chart_selection == "All Brokers":
-        chart_brokers = brokers_sorted
-        chart_counts = counts_sorted
-        chart_hover_texts = hover_texts_sorted
+        st.subheader("📥 Download Modified Table")
+        excel_data = to_excel(edited_df)
+        st.download_button("Download as Excel", data=excel_data, file_name="modified_table.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
-        # If a specific broker is selected, find their data
-        try:
-            idx = brokers_sorted.index(chart_selection)
-            chart_brokers = [brokers_sorted[idx]]
-            chart_counts = [counts_sorted[idx]]
-            chart_hover_texts = [hover_texts_sorted[idx]]
-        except ValueError:
-            st.warning(f"Data for '{chart_selection}' not found after processing. Please try re-uploading the file.")
-
-
-    # Create the Plotly bar chart
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            x=chart_brokers,
-            y=chart_counts,
-            text=chart_counts, # Display count on top of bars
-            textposition='auto',
-            hovertext=chart_hover_texts, # Detailed carriers on hover
-            hoverinfo='text+y', # Show hovertext and y-value
-            marker_color='lightblue'
-        )
-    )
-
-    # Update layout for the bar chart
-    fig.update_layout(
-        title='Number of Brokers per Carrier',
-        xaxis_title='Carrier',
-        yaxis_title='Number of Brokers',
-        xaxis={'tickangle': 45}, # Rotate x-axis labels for readability
-        height=600,
-        width=1200,
-        margin=dict(b=200), # Adjust bottom margin for rotated labels
-        showlegend=False # No legend needed for a single bar trace
-    )
-    
-    # Display the Plotly chart in the Streamlit app
-    st.plotly_chart(fig, use_container_width=True) # Makes chart responsive to container width
-
-    # Add a horizontal divider for visual separation
-    st.markdown("---")
-
-    # --- BROKER-SPECIFIC CARRIER LIST SECTION ---
-    st.header("Broker-Specific Carrier Details")
-    st.write("Select a Carrier from the dropdown below to see a comprehensive list of all Brokers associated with them.")
-
-    # Streamlit's selectbox for the broker details display
-    table_selection = st.selectbox(
-        "Select a Carrier to view its Associated Brokers:",
-        options=["Select a Carrier"] + brokers_sorted, # Add a default "Select" option
-        index=0 # Default to "Select a Broker"
-    )
-
-    # Display carrier list based on selection
-    if table_selection != "Select a Carrier":
-        st.subheader(f"Brokers for {table_selection}")
-        if table_selection in broker_carrier_lists:
-            carriers = broker_carrier_lists[table_selection]
-            # Display carriers as a markdown list in Streamlit for clear readability
-            for carrier in carriers:
-                st.markdown(f"- **{carrier}**")
-        else:
-            st.warning(f"No associated carriers found for '{table_selection}'. This might be due to data cleaning or missing entries.")
-    else:
-        st.info("Please select a Carrier from the dropdown above to view their associated Brokers.")
-
-# --- Initial Message when no file is uploaded ---
+        st.warning("No named tables found in Sheet1.")
 else:
-    st.info("Please upload your 'Broker Carrier Listing' file (CSV or Excel) in the sidebar to begin analysis. Use the sample file if you don't have your own data ready.")
+    st.info("Please upload an Excel file to begin.")
+
