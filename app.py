@@ -11,20 +11,14 @@ uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
     try:
-        # Cache the openpyxl workbook object
-        # @st.cache_resource is appropriate for this large, mutable object
         @st.cache_resource(ttl=3600)
         def load_workbook_from_bytesio(file_buffer):
-            # Seek to the beginning before loading
             file_buffer.seek(0)
             return openpyxl.load_workbook(file_buffer, data_only=True)
 
-        # Cache the initial subtable extraction and DataFrame creation
-        # IMPORTANT: Prefix `_workbook` with an underscore to tell Streamlit not to hash it directly.
-        # Streamlit implicitly handles cache invalidation for the resource if load_workbook_from_bytesio's inputs change.
         @st.cache_data(ttl=3600)
         def get_initial_dataframe(_workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
-            ws = _workbook[sheet_name] # Use the _workbook here
+            ws = _workbook[sheet_name]
 
             data = [
                 list(row)
@@ -50,20 +44,25 @@ if uploaded_file is not None:
                 headers.append(h_str)
 
             df_result = pd.DataFrame(rows, columns=headers)
-            return df_result.dropna(how="all")
+            df_result = df_result.dropna(how="all")
+
+            # Add a default 'Order' column for reordering
+            if 'Order' not in df_result.columns:
+                 df_result.insert(0, 'Order', range(1, len(df_result) + 1)) # Add at the beginning, 1-indexed
+
+            return df_result
 
 
-        # Load the workbook using the cached function
         wb = load_workbook_from_bytesio(uploaded_file)
         sheet_names = wb.sheetnames
 
         st.success("File loaded successfully!")
 
         selected_sheet = st.selectbox("Select a sheet", sheet_names)
-        ws = wb[selected_sheet] # Get worksheet from the loaded workbook
+        ws = wb[selected_sheet]
 
         max_row = ws.max_row
-        max_col = ws.max_column
+        max_col = ws.max_col
         st.write(f"Sheet dimensions: {max_row} rows, {max_col} columns")
 
         st.markdown("### 🔍 Choose Subtable Selection Method")
@@ -73,7 +72,7 @@ if uploaded_file is not None:
             index=0
         )
 
-        df_initial = pd.DataFrame() # Initialize df_initial
+        df_initial = pd.DataFrame()
         start_row_manual = 1
         end_row_manual = min(start_row_manual + 10, max_row)
         start_col_manual = 1
@@ -88,18 +87,15 @@ if uploaded_file is not None:
             end_col_manual = st.number_input("End Column", min_value=start_col_manual, max_value=max_col, value=min(start_col_manual + 5, max_col), key="end_col_manual")
             use_first_row_as_header_manual = st.checkbox("Use first row of selection as header", value=True, key="use_header_manual")
 
-            # Get the initial DataFrame using the cached function
             df_initial = get_initial_dataframe(wb, selected_sheet, start_row_manual, end_row_manual, start_col_manual, end_col_manual, use_first_row_as_header_manual)
 
         elif selection_method == "Auto-Detect by Blank Rows":
             st.markdown("#### Auto-Detecting Subtables")
-            # For auto-detect, we need to pass the raw uploaded_file BytesIO object
-            # to read_excel, as openpyxl might have moved the pointer.
             uploaded_file.seek(0)
             full_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None)
 
             non_empty_rows = full_df.dropna(how='all').index.tolist()
-            df_auto_detected = pd.DataFrame() # Initialize auto-detected df
+            df_auto_detected = pd.DataFrame()
 
             if non_empty_rows:
                 first_data_row_index = non_empty_rows[0]
@@ -132,17 +128,19 @@ if uploaded_file is not None:
 
                     df_auto_detected = pd.DataFrame(auto_rows, columns=headers)
                     df_auto_detected = df_auto_detected.dropna(how="all")
+
+                    # Add default 'Order' column here too for auto-detected
+                    if 'Order' not in df_auto_detected.columns:
+                        df_auto_detected.insert(0, 'Order', range(1, len(df_auto_detected) + 1))
+
                 else:
                     st.warning("No contiguous data block found for auto-detection in columns.")
             else:
                 st.warning("No non-empty rows found for auto-detection.")
 
-            df_initial = df_auto_detected # Assign the auto-detected df
+            df_initial = df_auto_detected
 
         # --- Session State Management ---
-        # The ID now needs to incorporate the uploaded file's hash or ID to ensure cache invalidation
-        # when a new file is uploaded, even if its name is the same.
-        # uploaded_file.file_id is unique per upload.
         current_data_selection_id = f"{uploaded_file.file_id}-{selected_sheet}-{selection_method}-{start_row_manual}-{end_row_manual}-{start_col_manual}-{end_col_manual}-{use_first_row_as_header_manual}"
 
         if "last_processed_file_id" not in st.session_state or st.session_state.last_processed_file_id != current_data_selection_id:
@@ -158,16 +156,65 @@ if uploaded_file is not None:
 
         # --- Display and Editing UI ---
         if not st.session_state.current_df.empty:
-            st.subheader("✏️ Edit Table")
-            edited_df = st.data_editor(st.session_state.current_df, num_rows="dynamic", use_container_width=True)
+            st.subheader("✏️ Edit Table and Reorder Rows")
+            st.info("To reorder rows, edit the numbers in the 'Order' column. To delete a row, click the 'X' button on the right.")
 
-            if st.button("Save Changes"):
-                if not edited_df.equals(st.session_state.current_df):
-                    st.session_state.history.append(st.session_state.current_df.copy())
-                    st.session_state.current_df = edited_df.copy()
-                    st.success("Changes saved.")
+            # Data Editor with "Order" column set as editable
+            # Ensure 'Order' column is numeric for proper sorting
+            st.session_state.current_df['Order'] = pd.to_numeric(st.session_state.current_df['Order'], errors='coerce').fillna(0).astype(int)
+
+            edited_df = st.data_editor(
+                st.session_state.current_df,
+                num_rows="dynamic", # Enables row deletion (the 'X' button)
+                use_container_width=True,
+                column_config={
+                    "Order": st.column_config.NumberColumn(
+                        "Order",
+                        help="Assign a number to reorder rows.",
+                        default=0,
+                        step=1,
+                        format="%d"
+                    )
+                }
+            )
+
+            # Check for changes after editing
+            # If the user makes changes in the data_editor (including deleting rows or editing 'Order')
+            if not edited_df.equals(st.session_state.current_df):
+                st.session_state.history.append(st.session_state.current_df.copy())
+                st.session_state.current_df = edited_df.copy()
+                st.success("Changes detected. Save or Apply Order to confirm.")
+
+            # Button to apply reordering
+            if st.button("Apply New Row Order"):
+                if 'Order' in st.session_state.current_df.columns:
+                    # Drop rows where 'Order' might be NaN or 0 (if user deleted the number) or duplicates
+                    # Ensure unique order numbers for sorting
+                    temp_df = st.session_state.current_df.copy()
+                    
+                    # Handle duplicate order numbers by making them unique for sorting
+                    # Example: if user enters 1, 1, 2, make it 1, 1.1, 2
+                    temp_df['Order_temp_sort'] = temp_df['Order']
+                    if temp_df['Order_temp_sort'].duplicated().any():
+                        # Create unique identifiers for duplicated order numbers to maintain relative order
+                        # within duplicates
+                        temp_df['Order_temp_sort'] = temp_df.groupby('Order_temp_sort').cumcount().add(1).astype(str)
+                        temp_df['Order_temp_sort'] = temp_df['Order'].astype(str) + '.' + temp_df['Order_temp_sort']
+                        temp_df['Order_temp_sort'] = pd.to_numeric(temp_df['Order_temp_sort'], errors='coerce')
+
+                    # Sort by the 'Order' column (or temp_sort if duplicates)
+                    st.session_state.current_df = temp_df.sort_values(by='Order_temp_sort', ascending=True).drop(columns=['Order_temp_sort']).reset_index(drop=True)
+                    st.success("Rows reordered successfully!")
+                    st.rerun() # Rerun to reflect the new order in data_editor immediately
                 else:
-                    st.info("No changes to save.")
+                    st.warning("No 'Order' column found to reorder rows.")
+
+            # Separate "Save Changes" button for non-order related edits, or integrate it
+            # For simplicity, we can let "Apply New Row Order" also imply "Save Changes"
+            # Or keep a separate button if you want distinct actions.
+            # Given the flow, it's better to make "Apply New Row Order" implicitly save.
+            # If a separate "Save Changes" is still desired, add it here and ensure it saves edited_df.
+
 
             st.subheader("🔗 Combine Rows")
             st.write("Current table row indices:")
