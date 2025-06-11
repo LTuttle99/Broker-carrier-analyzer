@@ -29,6 +29,7 @@ if uploaded_file is not None:
                 raw_headers = list(data[0])
                 rows = data[1:]
             else:
+                # IMPORTANT: Use (end_col - start_col + 1) for consistent header generation
                 raw_headers = [f"Column_{i+1}" for i in range(end_col - start_col + 1)]
                 rows = data
 
@@ -61,9 +62,10 @@ if uploaded_file is not None:
         selected_sheet = st.selectbox("Select a sheet", sheet_names)
         ws = wb[selected_sheet]
 
+        # FIX: Changed ws.max_col back to ws.max_column
         max_row = ws.max_row
-        max_col = ws.max_col
-        st.write(f"Sheet dimensions: {max_row} rows, {max_col} columns")
+        max_column = ws.max_column # Corrected: max_column
+        st.write(f"Sheet dimensions: {max_row} rows, {max_column} columns") # Corrected: max_column
 
         st.markdown("### 🔍 Choose Subtable Selection Method")
         selection_method = st.radio(
@@ -76,15 +78,15 @@ if uploaded_file is not None:
         start_row_manual = 1
         end_row_manual = min(start_row_manual + 10, max_row)
         start_col_manual = 1
-        end_col_manual = min(start_col_manual + 5, max_col)
+        end_col_manual = min(start_col_manual + 5, max_column) # Corrected: max_column
         use_first_row_as_header_manual = True
 
         if selection_method == "Manual Range Input":
             st.markdown("#### Manual Subtable Range Selection")
             start_row_manual = st.number_input("Start Row (from Excel file)", min_value=1, max_value=max_row, value=1, key="start_row_manual")
             end_row_manual = st.number_input("End Row (from Excel file)", min_value=start_row_manual, max_value=max_row, value=min(start_row_manual + 10, max_row), key="end_row_manual")
-            start_col_manual = st.number_input("Start Column (A=1)", min_value=1, max_value=max_col, value=1, key="start_col_manual")
-            end_col_manual = st.number_input("End Column", min_value=start_col_manual, max_value=max_col, value=min(start_col_manual + 5, max_col), key="end_col_manual")
+            start_col_manual = st.number_input("Start Column (A=1)", min_value=1, max_value=max_column, value=1, key="start_col_manual") # Corrected: max_column
+            end_col_manual = st.number_input("End Column", min_value=start_col_manual, max_value=max_column, value=min(start_col_manual + 5, max_column), key="end_col_manual") # Corrected: max_column
             use_first_row_as_header_manual = st.checkbox("Use first row of selection as header", value=True, key="use_header_manual")
 
             df_initial = get_initial_dataframe(wb, selected_sheet, start_row_manual, end_row_manual, start_col_manual, end_col_manual, use_first_row_as_header_manual)
@@ -129,7 +131,6 @@ if uploaded_file is not None:
                     df_auto_detected = pd.DataFrame(auto_rows, columns=headers)
                     df_auto_detected = df_auto_detected.dropna(how="all")
 
-                    # Add default 'Order' column here too for auto-detected
                     if 'Order' not in df_auto_detected.columns:
                         df_auto_detected.insert(0, 'Order', range(1, len(df_auto_detected) + 1))
 
@@ -159,13 +160,12 @@ if uploaded_file is not None:
             st.subheader("✏️ Edit Table and Reorder Rows")
             st.info("To reorder rows, edit the numbers in the 'Order' column. To delete a row, click the 'X' button on the right.")
 
-            # Data Editor with "Order" column set as editable
             # Ensure 'Order' column is numeric for proper sorting
             st.session_state.current_df['Order'] = pd.to_numeric(st.session_state.current_df['Order'], errors='coerce').fillna(0).astype(int)
 
             edited_df = st.data_editor(
                 st.session_state.current_df,
-                num_rows="dynamic", # Enables row deletion (the 'X' button)
+                num_rows="dynamic",
                 use_container_width=True,
                 column_config={
                     "Order": st.column_config.NumberColumn(
@@ -178,43 +178,27 @@ if uploaded_file is not None:
                 }
             )
 
-            # Check for changes after editing
-            # If the user makes changes in the data_editor (including deleting rows or editing 'Order')
             if not edited_df.equals(st.session_state.current_df):
                 st.session_state.history.append(st.session_state.current_df.copy())
                 st.session_state.current_df = edited_df.copy()
                 st.success("Changes detected. Save or Apply Order to confirm.")
 
-            # Button to apply reordering
             if st.button("Apply New Row Order"):
                 if 'Order' in st.session_state.current_df.columns:
-                    # Drop rows where 'Order' might be NaN or 0 (if user deleted the number) or duplicates
-                    # Ensure unique order numbers for sorting
                     temp_df = st.session_state.current_df.copy()
-                    
-                    # Handle duplicate order numbers by making them unique for sorting
-                    # Example: if user enters 1, 1, 2, make it 1, 1.1, 2
+
                     temp_df['Order_temp_sort'] = temp_df['Order']
                     if temp_df['Order_temp_sort'].duplicated().any():
-                        # Create unique identifiers for duplicated order numbers to maintain relative order
-                        # within duplicates
                         temp_df['Order_temp_sort'] = temp_df.groupby('Order_temp_sort').cumcount().add(1).astype(str)
                         temp_df['Order_temp_sort'] = temp_df['Order'].astype(str) + '.' + temp_df['Order_temp_sort']
                         temp_df['Order_temp_sort'] = pd.to_numeric(temp_df['Order_temp_sort'], errors='coerce')
 
-                    # Sort by the 'Order' column (or temp_sort if duplicates)
                     st.session_state.current_df = temp_df.sort_values(by='Order_temp_sort', ascending=True).drop(columns=['Order_temp_sort']).reset_index(drop=True)
                     st.success("Rows reordered successfully!")
-                    st.rerun() # Rerun to reflect the new order in data_editor immediately
+                    st.rerun()
+
                 else:
                     st.warning("No 'Order' column found to reorder rows.")
-
-            # Separate "Save Changes" button for non-order related edits, or integrate it
-            # For simplicity, we can let "Apply New Row Order" also imply "Save Changes"
-            # Or keep a separate button if you want distinct actions.
-            # Given the flow, it's better to make "Apply New Row Order" implicitly save.
-            # If a separate "Save Changes" is still desired, add it here and ensure it saves edited_df.
-
 
             st.subheader("🔗 Combine Rows")
             st.write("Current table row indices:")
