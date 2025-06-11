@@ -5,7 +5,7 @@ from io import BytesIO
 import copy
 
 st.set_page_config(page_title="Excel Table Editor", layout="wide")
-st.title("📊 Excel Named Table Editor")
+st.title("📊 Excel Table Editor with Manual Range Support")
 
 # Session state for undo functionality
 if "history" not in st.session_state:
@@ -14,20 +14,15 @@ if "history" not in st.session_state:
 def combine_rows(df, selected_indices, custom_name):
     if not selected_indices:
         return df
-
     selected_rows = df.loc[selected_indices]
     combined_row = {}
-
     for col in df.columns:
         if pd.api.types.is_numeric_dtype(df[col]):
             combined_row[col] = selected_rows[col].sum()
         else:
             combined_row[col] = " / ".join(selected_rows[col].astype(str))
-
-    # Replace first column value with custom name
     if df.columns.size > 0:
         combined_row[df.columns[0]] = custom_name
-
     df = df.drop(index=selected_indices)
     df = pd.concat([df, pd.DataFrame([combined_row])], ignore_index=True)
     return df
@@ -35,7 +30,6 @@ def combine_rows(df, selected_indices, custom_name):
 def merge_columns(df, selected_columns, new_column_name):
     if not selected_columns or len(selected_columns) < 2:
         return df
-
     df[new_column_name] = df[selected_columns].astype(str).agg(" / ".join, axis=1)
     df = df.drop(columns=selected_columns)
     return df
@@ -59,6 +53,7 @@ if uploaded_file:
     ws = wb[selected_sheet]
     table_names = list(ws.tables.keys())
 
+    df = None
     if table_names:
         selected_table = st.selectbox("Select a named table", table_names)
         table = ws.tables[selected_table]
@@ -66,15 +61,29 @@ if uploaded_file:
         data = ws[table_range]
         data = [[cell.value for cell in row] for row in data]
         df = pd.DataFrame(data[1:], columns=data[0])
-        df = remove_empty_rows(df)
+    else:
+        st.warning("No named tables found in this sheet.")
+        manual_range = st.text_input("Enter cell range (e.g., A1:D20) or leave blank to load entire sheet")
+        if manual_range:
+            try:
+                data = ws[manual_range]
+                data = [[cell.value for cell in row] for row in data]
+                df = pd.DataFrame(data[1:], columns=data[0])
+            except Exception as e:
+                st.error(f"Error reading range: {e}")
+        else:
+            df = pd.DataFrame(ws.values)
+            df.columns = df.iloc[0]
+            df = df[1:]
 
+    if df is not None:
+        df = remove_empty_rows(df)
         if "current_df" not in st.session_state:
             st.session_state.current_df = df.copy()
 
         st.subheader("✏️ Edit Table")
         edited_df = st.data_editor(st.session_state.current_df, num_rows="dynamic", use_container_width=True)
 
-        # Save current state for undo
         if st.button("Save Changes"):
             st.session_state.history.append(copy.deepcopy(st.session_state.current_df))
             st.session_state.current_df = edited_df.copy()
@@ -110,8 +119,7 @@ if uploaded_file:
         st.subheader("📥 Download Modified Table")
         excel_data = to_excel(final_df)
         st.download_button("Download as Excel", data=excel_data, file_name="modified_table.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    else:
-        st.warning("No named tables found in the selected sheet.")
 else:
     st.info("Please upload an Excel file to begin.")
+
 
