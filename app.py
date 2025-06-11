@@ -11,35 +11,17 @@ uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
     try:
-        uploaded_file.seek(0)
-        wb = openpyxl.load_workbook(uploaded_file, data_only=True)
-        sheet_names = wb.sheetnames
+        # Cache the openpyxl workbook object
+        @st.cache_resource(ttl=3600) # Cache for 1 hour (or adjust as needed)
+        def load_workbook_from_bytesio(file_buffer):
+            # Seek to the beginning before loading
+            file_buffer.seek(0)
+            return openpyxl.load_workbook(file_buffer, data_only=True)
 
-        st.success("File loaded successfully!")
-
-        selected_sheet = st.selectbox("Select a sheet", sheet_names)
-        ws = wb[selected_sheet]
-
-        max_row = ws.max_row
-        max_col = ws.max_column
-        st.write(f"Sheet dimensions: {max_row} rows, {max_col} columns")
-
-        st.markdown("### 🔍 Choose Subtable Selection Method")
-        selection_method = st.radio(
-            "How do you want to select the subtable?",
-            ("Manual Range Input", "Auto-Detect by Blank Rows"),
-            index=0
-        )
-
-        df = pd.DataFrame() # Initialize df
-
-        if selection_method == "Manual Range Input":
-            st.markdown("#### Manual Subtable Range Selection")
-            start_row = st.number_input("Start Row (from Excel file)", min_value=1, max_value=max_row, value=1)
-            end_row = st.number_input("End Row (from Excel file)", min_value=start_row, max_value=max_row, value=min(start_row + 10, max_row))
-            start_col = st.number_input("Start Column (A=1)", min_value=1, max_value=max_col, value=1)
-            end_col = st.number_input("End Column", min_value=start_col, max_value=max_col, value=min(start_col + 5, max_col))
-            use_first_row_as_header = st.checkbox("Use first row of selection as header", value=True)
+        # Cache the initial subtable extraction and DataFrame creation
+        @st.cache_data(ttl=3600) # Cache for 1 hour
+        def get_initial_dataframe(workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
+            ws = workbook[sheet_name]
 
             data = [
                 list(row)
@@ -64,15 +46,58 @@ if uploaded_file is not None:
                     seen[h_str] = 0
                 headers.append(h_str)
 
-            df = pd.DataFrame(rows, columns=headers)
-            df = df.dropna(how="all")
+            df_result = pd.DataFrame(rows, columns=headers)
+            return df_result.dropna(how="all")
+
+
+        # Load the workbook using the cached function
+        wb = load_workbook_from_bytesio(uploaded_file)
+        sheet_names = wb.sheetnames
+
+        st.success("File loaded successfully!")
+
+        selected_sheet = st.selectbox("Select a sheet", sheet_names)
+        ws = wb[selected_sheet] # Get worksheet from the loaded workbook
+
+        max_row = ws.max_row
+        max_col = ws.max_column
+        st.write(f"Sheet dimensions: {max_row} rows, {max_col} columns")
+
+        st.markdown("### 🔍 Choose Subtable Selection Method")
+        selection_method = st.radio(
+            "How do you want to select the subtable?",
+            ("Manual Range Input", "Auto-Detect by Blank Rows"),
+            index=0
+        )
+
+        # Define default df as an empty DataFrame
+        df_initial = pd.DataFrame()
+        start_row_manual = 1
+        end_row_manual = min(start_row_manual + 10, max_row)
+        start_col_manual = 1
+        end_col_manual = min(start_col_manual + 5, max_col)
+        use_first_row_as_header_manual = True
+
+        if selection_method == "Manual Range Input":
+            st.markdown("#### Manual Subtable Range Selection")
+            start_row_manual = st.number_input("Start Row (from Excel file)", min_value=1, max_value=max_row, value=1, key="start_row_manual")
+            end_row_manual = st.number_input("End Row (from Excel file)", min_value=start_row_manual, max_value=max_row, value=min(start_row_manual + 10, max_row), key="end_row_manual")
+            start_col_manual = st.number_input("Start Column (A=1)", min_value=1, max_value=max_col, value=1, key="start_col_manual")
+            end_col_manual = st.number_input("End Column", min_value=start_col_manual, max_value=max_col, value=min(start_col_manual + 5, max_col), key="end_col_manual")
+            use_first_row_as_header_manual = st.checkbox("Use first row of selection as header", value=True, key="use_header_manual")
+
+            # Get the initial DataFrame using the cached function
+            df_initial = get_initial_dataframe(wb, selected_sheet, start_row_manual, end_row_manual, start_col_manual, end_col_manual, use_first_row_as_header_manual)
 
         elif selection_method == "Auto-Detect by Blank Rows":
             st.markdown("#### Auto-Detecting Subtables")
+            # For auto-detect, we need to pass the raw uploaded_file BytesIO object
+            # to read_excel, as openpyxl might have moved the pointer.
             uploaded_file.seek(0)
             full_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None)
 
             non_empty_rows = full_df.dropna(how='all').index.tolist()
+            df_auto_detected = pd.DataFrame() # Initialize auto-detected df
 
             if non_empty_rows:
                 first_data_row_index = non_empty_rows[0]
@@ -103,25 +128,30 @@ if uploaded_file is not None:
                             seen[h_str] = 0
                         headers.append(h_str)
 
-                    df = pd.DataFrame(auto_rows, columns=headers)
-                    df = df.dropna(how="all")
+                    df_auto_detected = pd.DataFrame(auto_rows, columns=headers)
+                    df_auto_detected = df_auto_detected.dropna(how="all")
                 else:
                     st.warning("No contiguous data block found for auto-detection in columns.")
             else:
                 st.warning("No non-empty rows found for auto-detection.")
 
-        # --- Session State Management ---
-        current_file_id = f"{uploaded_file.name}-{selected_sheet}-{selection_method}-{start_row}-{end_row}-{start_col}-{end_col}-{use_first_row_as_header}"
+            df_initial = df_auto_detected # Assign the auto-detected df
 
-        if "last_processed_file_id" not in st.session_state or st.session_state.last_processed_file_id != current_file_id:
-            st.session_state.current_df = df.copy()
+        # --- Session State Management ---
+        # The ID now needs to incorporate the uploaded file's hash or ID to ensure cache invalidation
+        # when a new file is uploaded, even if its name is the same.
+        # uploaded_file.file_id is unique per upload.
+        current_data_selection_id = f"{uploaded_file.file_id}-{selected_sheet}-{selection_method}-{start_row_manual}-{end_row_manual}-{start_col_manual}-{end_col_manual}-{use_first_row_as_header_manual}"
+
+        if "last_processed_file_id" not in st.session_state or st.session_state.last_processed_file_id != current_data_selection_id:
+            st.session_state.current_df = df_initial.copy()
             st.session_state.history = []
-            st.session_state.last_processed_file_id = current_file_id
+            st.session_state.last_processed_file_id = current_data_selection_id
             st.info("New file, sheet, or selection parameters detected. Table and history reset.")
-        elif st.session_state.current_df.empty and not df.empty:
-            st.session_state.current_df = df.copy()
+        elif st.session_state.current_df.empty and not df_initial.empty:
+            st.session_state.current_df = df_initial.copy()
             st.session_state.history = []
-            st.session_state.last_processed_file_id = current_file_id
+            st.session_state.last_processed_file_id = current_data_selection_id
             st.info("Re-initializing table from file as previous data was empty.")
 
         # --- Display and Editing UI ---
@@ -138,7 +168,6 @@ if uploaded_file is not None:
                     st.info("No changes to save.")
 
             st.subheader("🔗 Combine Rows")
-            # IMPORTANT: Display the actual DataFrame index for clarity to the user
             st.write("Current table row indices:")
             st.dataframe(st.session_state.current_df.index.to_frame(name='Index'), use_container_width=True)
             st.info("Please select rows using the indices displayed above for the *current table*.")
@@ -154,7 +183,7 @@ if uploaded_file is not None:
                     st.session_state.history.append(st.session_state.current_df.copy())
 
                     combined_row_data = {}
-                    selected_df = st.session_state.current_df.loc[selected_rows] # .loc ensures correct row selection by index
+                    selected_df = st.session_state.current_df.loc[selected_rows]
 
                     for col in st.session_state.current_df.columns:
                         if pd.api.types.is_numeric_dtype(st.session_state.current_df[col]):
@@ -166,17 +195,11 @@ if uploaded_file is not None:
                         first_col_name = st.session_state.current_df.columns[0]
                         combined_row_data[first_col_name] = custom_name
 
-                    # Create a new DataFrame for the combined row
                     combined_df = pd.DataFrame([combined_row_data], columns=st.session_state.current_df.columns)
-
-                    # Remove selected rows and concatenate the new combined row
-                    # Do NOT reset index after dropping, then concat and *then* reset.
-                    # This preserves the original index integrity for remaining rows.
                     remaining_df = st.session_state.current_df.drop(index=selected_rows)
                     st.session_state.current_df = pd.concat([remaining_df, combined_df], ignore_index=True)
                     st.success("Rows combined successfully.")
-                    # Rerun to update multiselect (Streamlit automatically does this on button press)
-                    st.rerun() # Explicit rerun for immediate update of multiselect
+                    st.rerun()
 
                 else:
                     st.warning("No rows selected to combine.")
@@ -200,7 +223,7 @@ if uploaded_file is not None:
                 if st.session_state.history:
                     st.session_state.current_df = st.session_state.history.pop()
                     st.success("Undo successful.")
-                    st.rerun() # Rerun to update multiselect and data_editor
+                    st.rerun()
                 else:
                     st.warning("No previous state to undo.")
 
