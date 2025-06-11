@@ -12,137 +12,145 @@ uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx", "xls"])
 if uploaded_file is not None:
     try:
         @st.cache_resource(ttl=3600)
-        def load_workbook_from_bytesio(file_buffer):
+        def load_workbook_and_get_sheet_names(file_buffer):
             file_buffer.seek(0)
-            return openpyxl.load_workbook(file_buffer, data_only=True)
+            wb = openpyxl.load_workbook(file_buffer, data_only=True)
+            return wb, wb.sheetnames
 
+        # Modified get_initial_dataframe to use pandas.read_excel directly
+        # This simplifies the logic as pandas handles header detection and range reading well.
         @st.cache_data(ttl=3600)
-        def get_initial_dataframe(_workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
-            ws = _workbook[sheet_name]
+        def get_initial_dataframe_pandas(_file_buffer, sheet_name, header_row_index, usecols_range=None):
+            """
+            Reads a specific sheet and range from an Excel file buffer into a DataFrame.
+            _file_buffer: BytesIO object of the uploaded file.
+            sheet_name: The name of the sheet to read.
+            header_row_index: The 0-based index of the row to use as header. None if no header.
+            usecols_range: A list of column names or 0-based indices to include.
+                           If None, all columns are included.
+            """
+            _file_buffer.seek(0) # Important: always seek to start before reading
+            
+            # If header_row_index is None, pandas will not use any header
+            header_param = header_row_index if header_row_index is not None else None
+            
+            df_result = pd.read_excel(
+                _file_buffer,
+                sheet_name=sheet_name,
+                header=header_param,
+                usecols=usecols_range # If usecols_range is None, pandas reads all
+            )
+            
+            df_result = df_result.dropna(how="all") # Drop rows that are entirely NaN
 
-            data = [
-                list(row)
-                for row in ws.iter_rows(min_row=start_row, max_row=end_row, min_col=start_col, max_col=end_col, values_only=True)
-            ]
-
-            if use_first_row_as_header and len(data) > 0:
-                raw_headers = list(data[0])
-                rows = data[1:]
-            else:
-                # IMPORTANT: Use (end_col - start_col + 1) for consistent header generation
-                raw_headers = [f"Column_{i+1}" for i in range(end_col - start_col + 1)]
-                rows = data
-
-            headers = []
-            seen = {}
-            for h in raw_headers:
-                h_str = str(h) if h is not None and str(h).strip() != "" else "Unnamed"
-                if h_str in seen:
-                    seen[h_str] += 1
-                    h_str = f"{h_str}_{seen[h_str]}"
-                else:
-                    seen[h_str] = 0
-                headers.append(h_str)
-
-            df_result = pd.DataFrame(rows, columns=headers)
-            df_result = df_result.dropna(how="all")
-
-            # Add a default 'Order' column for reordering
+            # Add a default 'Order' column for reordering if not present
             if 'Order' not in df_result.columns:
                  df_result.insert(0, 'Order', range(1, len(df_result) + 1)) # Add at the beginning, 1-indexed
+            
+            # Ensure 'Order' column is numeric for proper sorting when initialized
+            df_result['Order'] = pd.to_numeric(df_result['Order'], errors='coerce').fillna(0).astype(int)
 
             return df_result
 
 
-        wb = load_workbook_from_bytesio(uploaded_file)
-        sheet_names = wb.sheetnames
+        wb, sheet_names = load_workbook_and_get_sheet_names(uploaded_file)
 
         st.success("File loaded successfully!")
 
         selected_sheet = st.selectbox("Select a sheet", sheet_names)
-        ws = wb[selected_sheet]
 
-        # FIX: Changed ws.max_col back to ws.max_column
+        # Get max_row and max_column for the selected sheet using openpyxl for accurate dimensions
+        ws = wb[selected_sheet]
         max_row = ws.max_row
-        max_column = ws.max_column # Corrected: max_column
-        st.write(f"Sheet dimensions: {max_row} rows, {max_column} columns") # Corrected: max_column
+        max_column = ws.max_column
+        st.write(f"Sheet dimensions: {max_row} rows, {max_column} columns")
 
         st.markdown("### 🔍 Choose Subtable Selection Method")
         selection_method = st.radio(
             "How do you want to select the subtable?",
-            ("Manual Range Input", "Auto-Detect by Blank Rows"),
+            ("Manual Range Input", "Auto-Detect First Table"), # Changed text
             index=0
         )
 
-        df_initial = pd.DataFrame()
-        start_row_manual = 1
-        end_row_manual = min(start_row_manual + 10, max_row)
-        start_col_manual = 1
-        end_col_manual = min(start_col_manual + 5, max_column) # Corrected: max_column
-        use_first_row_as_header_manual = True
+        df_initial = pd.DataFrame() # Initialize df_initial
 
         if selection_method == "Manual Range Input":
             st.markdown("#### Manual Subtable Range Selection")
-            start_row_manual = st.number_input("Start Row (from Excel file)", min_value=1, max_value=max_row, value=1, key="start_row_manual")
-            end_row_manual = st.number_input("End Row (from Excel file)", min_value=start_row_manual, max_value=max_row, value=min(start_row_manual + 10, max_row), key="end_row_manual")
-            start_col_manual = st.number_input("Start Column (A=1)", min_value=1, max_value=max_column, value=1, key="start_col_manual") # Corrected: max_column
-            end_col_manual = st.number_input("End Column", min_value=start_col_manual, max_value=max_column, value=min(start_col_manual + 5, max_column), key="end_col_manual") # Corrected: max_column
-            use_first_row_as_header_manual = st.checkbox("Use first row of selection as header", value=True, key="use_header_manual")
+            start_row_excel = st.number_input("Start Row (from Excel file, 1-indexed)", min_value=1, max_value=max_row, value=1, key="start_row_manual")
+            end_row_excel = st.number_input("End Row (from Excel file, 1-indexed)", min_value=start_row_excel, max_value=max_row, value=min(start_row_excel + 10, max_row), key="end_row_manual")
+            start_col_excel = st.number_input("Start Column (A=1)", min_value=1, max_value=max_column, value=1, key="start_col_manual")
+            end_col_excel = st.number_input("End Column", min_value=start_col_excel, max_value=max_column, value=min(start_col_excel + 5, max_column), key="end_col_manual")
+            use_first_row_as_header = st.checkbox("Use first row of selection as header", value=True, key="use_header_manual")
 
-            df_initial = get_initial_dataframe(wb, selected_sheet, start_row_manual, end_row_manual, start_col_manual, end_col_manual, use_first_row_as_header_manual)
+            # Convert 1-indexed Excel ranges to 0-indexed pandas parameters
+            header_row_index = start_row_excel - 1 if use_first_row_as_header else None
+            # Pandas usecols expects column names or 0-indexed column numbers.
+            # To select a range, we can pass a list of indices: [start_col-1, ..., end_col-1]
+            usecols_range = list(range(start_col_excel - 1, end_col_excel))
+            
+            # Pass the uploaded_file directly, not the wb object
+            df_initial = get_initial_dataframe_pandas(uploaded_file, selected_sheet, header_row_index, usecols_range)
 
-        elif selection_method == "Auto-Detect by Blank Rows":
-            st.markdown("#### Auto-Detecting Subtables")
+            # Manually trim rows if not using a header or if the header row is outside the range for data
+            if not use_first_row_as_header:
+                # If no header, data starts from start_row_excel, so skiprows = start_row_excel - 1
+                # pandas read_excel already accounts for skiprows based on header
+                # We need to explicitly slice rows if header=None and we want a specific range.
+                # However, with get_initial_dataframe_pandas, we're relying on header=param,
+                # so the slicing needs to happen after the initial load.
+                # This makes manual range harder if you don't use the first row as header.
+
+                # Re-think this part: if use_first_row_as_header is False, the first row
+                # of the loaded dataframe should correspond to start_row_excel.
+                # pandas read_excel with header=None will read from row 0.
+                # We need to manually slice the dataframe *after* loading if header=None is truly desired
+                # and we want a subset of rows from the non-header-skipped dataframe.
+                # For simplicity, stick to header_row_index or let pandas infer.
+                pass # The current get_initial_dataframe_pandas handles the header_row_index correctly.
+
+
+        elif selection_method == "Auto-Detect First Table":
+            st.markdown("#### Auto-Detecting First Table (Smart Search)")
+            
             uploaded_file.seek(0)
-            full_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None)
+            # Read the entire sheet without any header or parsing for initial scan
+            temp_full_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None)
 
-            non_empty_rows = full_df.dropna(how='all').index.tolist()
-            df_auto_detected = pd.DataFrame()
-
-            if non_empty_rows:
-                first_data_row_index = non_empty_rows[0]
-                last_data_row_index = first_data_row_index
-                for i in range(first_data_row_index + 1, len(full_df)):
-                    if (i in non_empty_rows) and ((i - 1) in non_empty_rows):
-                        last_data_row_index = i
-                    else:
-                        break
-
-                sub_df_raw = full_df.iloc[first_data_row_index : last_data_row_index + 1]
-                non_empty_cols = sub_df_raw.dropna(axis=1, how='all').columns.tolist()
-
-                if non_empty_cols:
-                    st.info(f"Auto-detected range: Rows {first_data_row_index + 1} to {last_data_row_index + 1}, Columns {non_empty_cols[0] + 1} to {non_empty_cols[-1] + 1}")
-
-                    auto_headers = sub_df_raw.iloc[0].tolist()
-                    auto_rows = sub_df_raw.iloc[1:].values.tolist()
-
-                    headers = []
-                    seen = {}
-                    for h in auto_headers:
-                        h_str = str(h) if h is not None and str(h).strip() != "" else "Unnamed"
-                        if h_str in seen:
-                            seen[h_str] += 1
-                            h_str = f"{h_str}_{seen[h_str]}"
-                        else:
-                            seen[h_str] = 0
-                        headers.append(h_str)
-
-                    df_auto_detected = pd.DataFrame(auto_rows, columns=headers)
-                    df_auto_detected = df_auto_detected.dropna(how="all")
-
-                    if 'Order' not in df_auto_detected.columns:
-                        df_auto_detected.insert(0, 'Order', range(1, len(df_auto_detected) + 1))
-
-                else:
-                    st.warning("No contiguous data block found for auto-detection in columns.")
+            potential_header_row_index = -1
+            min_non_empty_cells_for_header = 3 # Heuristic: at least 3 non-empty cells to be a header
+            
+            # Find the first row that looks like a header (sufficient non-empty cells)
+            for r_idx in range(len(temp_full_df)):
+                row_data = temp_full_df.iloc[r_idx]
+                non_empty_count = row_data.count() # Count non-NaN cells
+                
+                if non_empty_count >= min_non_empty_cells_for_header:
+                    potential_header_row_index = r_idx
+                    break
+            
+            if potential_header_row_index != -1:
+                st.info(f"Auto-detected table starting around row {potential_header_row_index + 1} (1-indexed) using it as header.")
+                # We'll use this row as the header for pd.read_excel
+                # get_initial_dataframe_pandas handles reading from this header row onwards
+                df_initial = get_initial_dataframe_pandas(uploaded_file, selected_sheet, potential_header_row_index)
             else:
-                st.warning("No non-empty rows found for auto-detection.")
+                st.warning("Could not auto-detect a clear table header. Displaying first 50 rows with no header.")
+                # Fallback: if no clear header, just load first 50 rows as raw data
+                uploaded_file.seek(0)
+                df_initial = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None, nrows=50)
+                # Manually add Order column if not present
+                if 'Order' not in df_initial.columns:
+                    df_initial.insert(0, 'Order', range(1, len(df_initial) + 1))
+                df_initial = df_initial.dropna(how="all")
 
-            df_initial = df_auto_detected
 
         # --- Session State Management ---
-        current_data_selection_id = f"{uploaded_file.file_id}-{selected_sheet}-{selection_method}-{start_row_manual}-{end_row_manual}-{start_col_manual}-{end_col_manual}-{use_first_row_as_header_manual}"
+        # Include all parameters that affect the initial df_initial creation in the ID
+        current_data_selection_id = (
+            f"{uploaded_file.file_id}-{selected_sheet}-{selection_method}-"
+            f"{start_row_manual}-{end_row_manual}-{start_col_manual}-{end_col_manual}-"
+            f"{use_first_row_as_header}"
+        )
 
         if "last_processed_file_id" not in st.session_state or st.session_state.last_processed_file_id != current_data_selection_id:
             st.session_state.current_df = df_initial.copy()
@@ -154,13 +162,13 @@ if uploaded_file is not None:
             st.session_state.history = []
             st.session_state.last_processed_file_id = current_data_selection_id
             st.info("Re-initializing table from file as previous data was empty.")
-
+        
         # --- Display and Editing UI ---
         if not st.session_state.current_df.empty:
             st.subheader("✏️ Edit Table and Reorder Rows")
             st.info("To reorder rows, edit the numbers in the 'Order' column. To delete a row, click the 'X' button on the right.")
 
-            # Ensure 'Order' column is numeric for proper sorting
+            # Ensure 'Order' column is numeric for proper sorting (re-convert in case of edits)
             st.session_state.current_df['Order'] = pd.to_numeric(st.session_state.current_df['Order'], errors='coerce').fillna(0).astype(int)
 
             edited_df = st.data_editor(
