@@ -12,16 +12,19 @@ uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx", "xls"])
 if uploaded_file is not None:
     try:
         # Cache the openpyxl workbook object
-        @st.cache_resource(ttl=3600) # Cache for 1 hour (or adjust as needed)
+        # @st.cache_resource is appropriate for this large, mutable object
+        @st.cache_resource(ttl=3600)
         def load_workbook_from_bytesio(file_buffer):
             # Seek to the beginning before loading
             file_buffer.seek(0)
             return openpyxl.load_workbook(file_buffer, data_only=True)
 
         # Cache the initial subtable extraction and DataFrame creation
-        @st.cache_data(ttl=3600) # Cache for 1 hour
-        def get_initial_dataframe(workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
-            ws = workbook[sheet_name]
+        # IMPORTANT: Prefix `_workbook` with an underscore to tell Streamlit not to hash it directly.
+        # Streamlit implicitly handles cache invalidation for the resource if load_workbook_from_bytesio's inputs change.
+        @st.cache_data(ttl=3600)
+        def get_initial_dataframe(_workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
+            ws = _workbook[sheet_name] # Use the _workbook here
 
             data = [
                 list(row)
@@ -70,8 +73,7 @@ if uploaded_file is not None:
             index=0
         )
 
-        # Define default df as an empty DataFrame
-        df_initial = pd.DataFrame()
+        df_initial = pd.DataFrame() # Initialize df_initial
         start_row_manual = 1
         end_row_manual = min(start_row_manual + 10, max_row)
         start_col_manual = 1
