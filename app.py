@@ -13,8 +13,12 @@ AUTO_FILL_END_ROW = 36
 AUTO_FILL_START_COL = 2
 AUTO_FILL_END_COL = 5
 
-# Define the order numbers to automatically remove
-ORDERS_TO_AUTO_REMOVE = [8, 10, 13]
+# Define the order numbers to be automatically removed
+ROWS_TO_AUTO_REMOVE = [8, 10, 13]
+
+# Define the order numbers to be automatically combined and the new name
+ROWS_TO_AUTO_COMBINE = [11, 12]
+AUTO_COMBINED_ROW_NAME = "MT - Without FV"
 
 # --- File Upload Section (Moved to Sidebar) ---
 with st.sidebar:
@@ -283,27 +287,6 @@ if uploaded_file is not None:
 
             df_initial = df_auto_detected
 
-        # --- Automatic Row Removal based on Order Number ---
-        st.markdown("### 🧹 Automatic Row Removal")
-        auto_remove_orders_checkbox = st.checkbox(
-            f"Automatically remove rows with 'Order' numbers: {', '.join(map(str, ORDERS_TO_AUTO_REMOVE))}",
-            key="auto_remove_orders_checkbox"
-        )
-
-        if auto_remove_orders_checkbox and not df_initial.empty and 'Order' in df_initial.columns:
-            # Ensure 'Order' column is numeric for comparison
-            df_initial['Order'] = pd.to_numeric(df_initial['Order'], errors='coerce').fillna(0).astype(int)
-            
-            rows_before_removal = len(df_initial)
-            df_initial = df_initial[~df_initial['Order'].isin(ORDERS_TO_AUTO_REMOVE)]
-            rows_after_removal = len(df_initial)
-            
-            if rows_after_removal < rows_before_removal:
-                st.info(f"Automatically removed {rows_before_removal - rows_after_removal} rows based on 'Order' numbers.")
-            elif rows_after_removal == rows_before_removal and len(ORDERS_TO_AUTO_REMOVE) > 0:
-                st.info("No rows matching the auto-removal order numbers were found.")
-
-
         # --- Session State Management for current_df and history ---
         # Create a unique ID to determine if the base data selection has changed
         current_data_selection_id = (
@@ -314,8 +297,7 @@ if uploaded_file is not None:
             f"{st.session_state.get('end_row_manual_val', '')}-"
             f"{st.session_state.get('start_col_manual_val', '')}-"
             f"{st.session_state.get('end_col_manual_val', '')}-"
-            f"{st.session_state.get('use_header_manual_val', '')}-"
-            f"{auto_remove_orders_checkbox}" # Include this in the ID
+            f"{st.session_state.get('use_header_manual_val', '')}"
         )
 
         if "last_processed_file_id" not in st.session_state or st.session_state.last_processed_file_id != current_data_selection_id:
@@ -329,6 +311,78 @@ if uploaded_file is not None:
             st.session_state.history = []
             st.session_state.last_processed_file_id = current_data_selection_id
             st.info("Re-initializing table from file as previous data was empty.")
+
+        # --- Auto-remove specific rows ---
+        if not st.session_state.current_df.empty and 'Order' in st.session_state.current_df.columns:
+            st.markdown("### 🗑️ Automatic Row Filtering")
+            auto_remove_toggle = st.checkbox(
+                f"Automatically remove rows with 'Order' numbers: {', '.join(map(str, ROWS_TO_AUTO_REMOVE))}",
+                key="auto_remove_rows_toggle"
+            )
+
+            if auto_remove_toggle:
+                original_row_count = len(st.session_state.current_df)
+                
+                # Convert 'Order' column to numeric, coercing errors to NaN, then fill NaN with a value that won't match
+                # This ensures the comparison works even if 'Order' column has non-numeric entries
+                df_temp = st.session_state.current_df.copy()
+                df_temp['Order_numeric'] = pd.to_numeric(df_temp['Order'], errors='coerce')
+
+                rows_to_keep_mask = ~df_temp['Order_numeric'].isin(ROWS_TO_AUTO_REMOVE)
+                
+                # Check if any rows are actually being removed before updating history
+                if not rows_to_keep_mask.all(): # If not all rows are to be kept (i.e., some are to be removed)
+                    st.session_state.history.append(st.session_state.current_df.copy()) # Save current state before removal
+                    st.session_state.current_df = st.session_state.current_df[rows_to_keep_mask].drop(columns=['Order_numeric']).reset_index(drop=True)
+                    removed_count = original_row_count - len(st.session_state.current_df)
+                    st.success(f"Automatically removed {removed_count} row(s) based on predefined order numbers.")
+                    st.rerun() # Rerun to display the filtered table
+            st.markdown("---") # Separator for auto-filter options
+
+        # --- Auto-combine specific rows ---
+        if not st.session_state.current_df.empty and 'Order' in st.session_state.current_df.columns and len(ROWS_TO_AUTO_COMBINE) > 1:
+            st.markdown("### 🔗 Automatic Row Combination")
+            auto_combine_toggle = st.checkbox(
+                f"Automatically combine rows with 'Order' numbers: {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} and rename to '{AUTO_COMBINED_ROW_NAME}'",
+                key="auto_combine_rows_toggle"
+            )
+
+            if auto_combine_toggle:
+                # Convert 'Order' column to numeric for robust comparison
+                df_temp = st.session_state.current_df.copy()
+                df_temp['Order_numeric'] = pd.to_numeric(df_temp['Order'], errors='coerce')
+
+                # Find the actual indices of rows to combine based on 'Order_numeric'
+                # Ensure we only pick rows that are currently present and match
+                indices_to_combine = df_temp[df_temp['Order_numeric'].isin(ROWS_TO_AUTO_COMBINE)].index.tolist()
+
+                if len(indices_to_combine) > 1: # Only combine if at least two target rows exist
+                    st.session_state.history.append(st.session_state.current_df.copy()) # Save current state
+
+                    combined_row_data = {}
+                    selected_df_for_auto_combine = st.session_state.current_df.loc[indices_to_combine]
+
+                    for col in st.session_state.current_df.columns:
+                        if pd.api.types.is_numeric_dtype(st.session_state.current_df[col]):
+                            combined_row_data[col] = selected_df_for_auto_combine[col].sum()
+                        else:
+                            # Join non-numeric values, handling NaNs
+                            combined_row_data[col] = " / ".join(selected_df_for_auto_combine[col].dropna().astype(str).tolist())
+                            # Assign the custom name to the first column, usually descriptive
+                            if col == st.session_state.current_df.columns[0]:
+                                combined_row_data[col] = AUTO_COMBINED_ROW_NAME
+
+                    # Create a new DataFrame for the single combined row
+                    combined_df_new = pd.DataFrame([combined_row_data], columns=st.session_state.current_df.columns)
+                    
+                    # Remove the original selected rows and add the new combined row
+                    remaining_df = st.session_state.current_df.drop(index=indices_to_combine).reset_index(drop=True)
+                    st.session_state.current_df = pd.concat([remaining_df, combined_df_new], ignore_index=True)
+                    st.success(f"Automatically combined rows with Order {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} into '{AUTO_COMBINED_ROW_NAME}'.")
+                    st.rerun()
+                else:
+                    st.warning(f"Could not auto-combine. Not enough rows with order numbers {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} found in the current table to combine.")
+            st.markdown("---") # Separator for auto-filter options
 
         # --- Display and Editing UI ---
         if not st.session_state.current_df.empty:
@@ -416,7 +470,7 @@ if uploaded_file is not None:
                     combined_df = pd.DataFrame([combined_row_data], columns=st.session_state.current_df.columns)
                     
                     # Remove the original selected rows and add the new combined row
-                    remaining_df = st.session_state.current_df.drop(index=selected_rows_to_combine)
+                    remaining_df = st.session_state.current_df.drop(index=selected_rows_to_combine).reset_index(drop=True)
                     st.session_state.current_df = pd.concat([remaining_df, combined_df], ignore_index=True)
                     st.success("Rows combined successfully.")
                     st.rerun()
