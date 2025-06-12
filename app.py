@@ -6,120 +6,246 @@ from io import BytesIO
 st.set_page_config(page_title="Excel Subtable Editor", layout="wide")
 st.title("📊 Excel Subtable Editor")
 
-# --- File Upload Section ---
-uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx", "xls"])
+# --- Configuration Constants ---
+# Define the default auto-fill values for the toggle switch
+AUTO_FILL_START_ROW = 23
+AUTO_FILL_END_ROW = 36
+AUTO_FILL_START_COL = 2
+AUTO_FILL_END_COL = 5
 
+# --- File Upload Section (Moved to Sidebar) ---
+with st.sidebar:
+    st.header("Upload Excel File")
+    uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx", "xls"])
+    st.markdown("---") # Separator in sidebar
+
+# --- Utility Functions (Cached) ---
+@st.cache_resource(ttl=3600)
+def load_workbook_from_bytesio(file_buffer):
+    """Loads an OpenPyXL workbook from a BytesIO object."""
+    file_buffer.seek(0)
+    return openpyxl.load_workbook(file_buffer, data_only=True)
+
+@st.cache_data(ttl=3600)
+def get_initial_dataframe(_workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
+    """
+    Extracts a DataFrame from a specified range within an OpenPyXL worksheet.
+    Handles header logic and ensures unique column names.
+    """
+    ws = _workbook[sheet_name]
+
+    # Ensure valid ranges, OpenPyXL is 1-indexed
+    start_row = max(1, start_row)
+    end_row = max(start_row, end_row) # Ensure end_row is not less than start_row
+    start_col = max(1, start_col)
+    end_col = max(start_col, end_col) # Ensure end_col is not less than start_col
+
+    data = []
+    try:
+        # Iterate over cells and collect values
+        for row in ws.iter_rows(min_row=start_row, max_row=end_row, min_col=start_col, max_col=end_col, values_only=True):
+            data.append(list(row))
+    except Exception as e:
+        st.error(f"Error reading specified range from sheet: {e}. Please check your row/column inputs.")
+        return pd.DataFrame() # Return empty DataFrame on error
+
+    if not data:
+        return pd.DataFrame() # Return empty if no data was read
+
+    if use_first_row_as_header and len(data) > 0:
+        raw_headers = list(data[0])
+        rows = data[1:]
+    else:
+        # Generate default headers based on the number of columns in the selection
+        raw_headers = [f"Column_{i+1}" for i in range(end_col - start_col + 1)]
+        rows = data
+
+    headers = []
+    seen = {}
+    for h in raw_headers:
+        h_str = str(h) if h is not None and str(h).strip() != "" else "Unnamed"
+        # Handle duplicate header names by appending a counter
+        if h_str in seen:
+            seen[h_str] += 1
+            h_str = f"{h_str}_{seen[h_str]}"
+        else:
+            seen[h_str] = 0 # Initialize counter
+        headers.append(h_str)
+    
+    # Ensure headers list matches the number of columns in rows
+    # This can happen if some rows have fewer columns than the inferred max_col
+    # Pad shorter rows with None if necessary to match header length
+    adjusted_rows = []
+    expected_cols = len(headers)
+    for row in rows:
+        if len(row) < expected_cols:
+            adjusted_rows.append(list(row) + [None] * (expected_cols - len(row)))
+        else:
+            adjusted_rows.append(list(row[:expected_cols])) # Truncate if row has more columns than expected
+            
+    df_result = pd.DataFrame(adjusted_rows, columns=headers)
+    df_result = df_result.dropna(how="all") # Drop rows where all values are NaN/empty
+
+    # Add a default 'Order' column for reordering if it doesn't exist
+    if 'Order' not in df_result.columns:
+        df_result.insert(0, 'Order', range(1, len(df_result) + 1)) # Add at the beginning, 1-indexed
+
+    return df_result
+
+# --- Main App Logic ---
 if uploaded_file is not None:
     try:
-        # Added st.spinner here for visual feedback during initial loading
         with st.spinner("Loading Excel file..."):
-            @st.cache_resource(ttl=3600)
-            def load_workbook_from_bytesio(file_buffer):
-                file_buffer.seek(0)
-                return openpyxl.load_workbook(file_buffer, data_only=True)
-
-            @st.cache_data(ttl=3600)
-            def get_initial_dataframe(_workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
-                ws = _workbook[sheet_name]
-
-                data = [
-                    list(row)
-                    for row in ws.iter_rows(min_row=start_row, max_row=end_row, min_col=start_col, max_col=end_col, values_only=True)
-                ]
-
-                if use_first_row_as_header and len(data) > 0:
-                    raw_headers = list(data[0])
-                    rows = data[1:]
-                else:
-                    # IMPORTANT: Use (end_col - start_col + 1) for consistent header generation
-                    raw_headers = [f"Column_{i+1}" for i in range(end_col - start_col + 1)]
-                    rows = data
-
-                headers = []
-                seen = {}
-                for h in raw_headers:
-                    h_str = str(h) if h is not None and str(h).strip() != "" else "Unnamed"
-                    if h_str in seen:
-                        seen[h_str] += 1
-                        h_str = f"{h_str}_{seen[h_str]}"
-                    else:
-                        seen[h_str] = 0
-                    headers.append(h_str)
-
-                df_result = pd.DataFrame(rows, columns=headers)
-                df_result = df_result.dropna(how="all")
-
-                # Add a default 'Order' column for reordering
-                if 'Order' not in df_result.columns:
-                     df_result.insert(0, 'Order', range(1, len(df_result) + 1)) # Add at the beginning, 1-indexed
-
-                return df_result
-
-
             wb = load_workbook_from_bytesio(uploaded_file)
         
-        # End of spinner block
-        
         sheet_names = wb.sheetnames
-
         st.success("File loaded successfully!")
 
-        selected_sheet = st.selectbox("Select a sheet", sheet_names)
-        ws = wb[selected_sheet]
+        # --- Sheet Selection & Dimensions (Moved to Sidebar) ---
+        with st.sidebar:
+            st.header("Sheet Selection")
+            selected_sheet = st.selectbox("Select a sheet", sheet_names, key="selected_sheet_sidebar")
+            ws = wb[selected_sheet]
+            max_row = ws.max_row
+            max_column = ws.max_column
+            st.info(f"Sheet dimensions: {max_row} rows, {max_column} columns")
+            st.markdown("---") # Separator in sidebar
 
-        max_row = ws.max_row
-        max_column = ws.max_column
-        st.write(f"Sheet dimensions: {max_row} rows, {max_column} columns")
-
+        # --- Subtable Selection Method ---
         st.markdown("### 🔍 Choose Subtable Selection Method")
         selection_method = st.radio(
             "How do you want to select the subtable?",
             ("Manual Range Input", "Auto-Detect by Blank Rows"),
-            index=0
+            index=0,
+            key="selection_method_radio"
         )
 
-        df_initial = pd.DataFrame()
-        start_row_manual = 1
-        end_row_manual = min(start_row_manual + 10, max_row)
-        start_col_manual = 1
-        end_col_manual = min(start_col_manual + 5, max_column)
-        use_first_row_as_header_manual = True
+        df_initial = pd.DataFrame() # Initialize empty DataFrame
+
+        # --- Initialize Session State for Manual Input Values ---
+        # These will hold the current values of the number_inputs
+        if "start_row_manual_val" not in st.session_state:
+            st.session_state.start_row_manual_val = 1
+        if "end_row_manual_val" not in st.session_state:
+            st.session_state.end_row_manual_val = min(st.session_state.start_row_manual_val + 10, max_row)
+        if "start_col_manual_val" not in st.session_state:
+            st.session_state.start_col_manual_val = 1
+        if "end_col_manual_val" not in st.session_state:
+            st.session_state.end_col_manual_val = min(st.session_state.start_col_manual_val + 5, max_column)
+        if "use_header_manual_val" not in st.session_state:
+            st.session_state.use_header_manual_val = True
+
+        # --- Auto-fill Toggle Switch ---
+        # This toggle will update the session state values for manual inputs
+        auto_fill_toggle = st.toggle(
+            f"Auto-fill with predefined range (Rows {AUTO_FILL_START_ROW}-{AUTO_FILL_END_ROW}, Cols {AUTO_FILL_START_COL}-{AUTO_FILL_END_COL})",
+            key="auto_fill_toggle_switch"
+        )
+
+        # If the toggle is active, update the session state values to the predefined ones
+        if auto_fill_toggle:
+            st.session_state.start_row_manual_val = AUTO_FILL_START_ROW
+            st.session_state.end_row_manual_val = AUTO_FILL_END_ROW
+            st.session_state.start_col_manual_val = AUTO_FILL_START_COL
+            st.session_state.end_col_manual_val = AUTO_FILL_END_COL
+            st.session_state.use_header_manual_val = True # Assume header for auto-filled data
 
         if selection_method == "Manual Range Input":
             st.markdown("#### Manual Subtable Range Selection")
-            start_row_manual = st.number_input("Start Row (from Excel file)", min_value=1, max_value=max_row, value=1, key="start_row_manual")
-            end_row_manual = st.number_input("End Row (from Excel file)", min_value=start_row_manual, max_value=max_row, value=min(start_row_manual + 10, max_row), key="end_row_manual")
-            start_col_manual = st.number_input("Start Column (A=1)", min_value=1, max_value=max_column, value=1, key="start_col_manual")
-            end_col_manual = st.number_input("End Column", min_value=start_col_manual, max_value=max_column, value=min(start_col_manual + 5, max_column), key="end_col_manual")
-            use_first_row_as_header_manual = st.checkbox("Use first row of selection as header", value=True, key="use_header_manual")
+            st.info("Enter the row and column numbers as they appear in Excel (1-indexed).")
+            
+            # Use session state values for the 'value' parameter of number_inputs
+            start_row_manual = st.number_input(
+                "Start Row", 
+                min_value=1, 
+                max_value=max_row, 
+                value=st.session_state.start_row_manual_val, # Controlled by session state
+                key="start_row_manual_input_key" # Unique key for the widget itself
+            )
+            end_row_manual = st.number_input(
+                "End Row", 
+                min_value=start_row_manual, # Dynamically adjust min_value
+                max_value=max_row, 
+                value=max(start_row_manual, st.session_state.end_row_manual_val), # Controlled by session state
+                key="end_row_manual_input_key"
+            )
+            start_col_manual = st.number_input(
+                "Start Column (A=1)", 
+                min_value=1, 
+                max_value=max_column, 
+                value=st.session_state.start_col_manual_val, # Controlled by session state
+                key="start_col_manual_input_key"
+            )
+            end_col_manual = st.number_input(
+                "End Column", 
+                min_value=start_col_manual, # Dynamically adjust min_value
+                max_value=max_column, 
+                value=max(start_col_manual, st.session_state.end_col_manual_val), # Controlled by session state
+                key="end_col_manual_input_key"
+            )
+            use_first_row_as_header_manual = st.checkbox(
+                "Use first row of selection as header", 
+                value=st.session_state.use_header_manual_val, # Controlled by session state
+                key="use_header_manual_input_key"
+            )
 
-            df_initial = get_initial_dataframe(wb, selected_sheet, start_row_manual, end_row_manual, start_col_manual, end_col_manual, use_first_row_as_header_manual)
+            # Update session state with the current values from the number_inputs
+            # This ensures manual edits persist across reruns
+            st.session_state.start_row_manual_val = start_row_manual
+            st.session_state.end_row_manual_val = end_row_manual
+            st.session_state.start_col_manual_val = start_col_manual
+            st.session_state.end_col_manual_val = end_col_manual
+            st.session_state.use_header_manual_val = use_first_row_as_header_manual
+
+            # Get the initial DataFrame based on the selected manual range
+            df_initial = get_initial_dataframe(wb, selected_sheet, 
+                                                start_row_manual, end_row_manual, 
+                                                start_col_manual, end_col_manual, 
+                                                use_first_row_as_header_manual)
 
         elif selection_method == "Auto-Detect by Blank Rows":
             st.markdown("#### Auto-Detecting Subtables")
-            uploaded_file.seek(0)
+            uploaded_file.seek(0) # Reset file pointer for pandas.read_excel
+            # Read the entire sheet without header initially to detect blank rows
             full_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None)
 
-            non_empty_rows = full_df.dropna(how='all').index.tolist()
+            non_empty_rows_indices = full_df.dropna(how='all').index.tolist()
             df_auto_detected = pd.DataFrame()
 
-            if non_empty_rows:
-                first_data_row_index = non_empty_rows[0]
-                last_data_row_index = first_data_row_index
-                for i in range(first_data_row_index + 1, len(full_df)):
-                    if (i in non_empty_rows) and ((i - 1) in non_empty_rows):
-                        last_data_row_index = i
+            if non_empty_rows_indices:
+                # Find the first contiguous block of data
+                first_data_row_idx_0based = non_empty_rows_indices[0]
+                last_data_row_idx_0based = first_data_row_idx_0based
+                for i in range(first_data_row_idx_0based + 1, len(full_df)):
+                    if (i in non_empty_rows_indices) and ((i - 1) in non_empty_rows_indices):
+                        last_data_row_idx_0based = i
                     else:
                         break
+                
+                # Extract the raw subtable based on detected rows
+                sub_df_raw = full_df.iloc[first_data_row_idx_0based : last_data_row_idx_0based + 1].copy()
+                # Detect non-empty columns within this subtable
+                non_empty_cols_indices = sub_df_raw.dropna(axis=1, how='all').columns.tolist()
 
-                sub_df_raw = full_df.iloc[first_data_row_index : last_data_row_index + 1]
-                non_empty_cols = sub_df_raw.dropna(axis=1, how='all').columns.tolist()
+                if non_empty_cols_indices:
+                    # Adjust to 1-based indexing for display
+                    detected_start_row = first_data_row_idx_0based + 1
+                    detected_end_row = last_data_row_idx_0based + 1
+                    detected_start_col = non_empty_cols_indices[0] + 1
+                    detected_end_col = non_empty_cols_indices[-1] + 1
+                    
+                    st.info(f"Auto-detected range: Rows {detected_start_row} to {detected_end_row}, Columns {detected_start_col} to {detected_end_col}")
 
-                if non_empty_cols:
-                    st.info(f"Auto-detected range: Rows {first_data_row_index + 1} to {last_data_row_index + 1}, Columns {non_empty_cols[0] + 1} to {non_empty_cols[-1] + 1}")
+                    # Option to confirm header for auto-detected table
+                    use_auto_detected_header = st.checkbox("Use the first row of the auto-detected selection as header?", value=True, key="use_auto_header")
 
-                    auto_headers = sub_df_raw.iloc[0].tolist()
-                    auto_rows = sub_df_raw.iloc[1:].values.tolist()
+                    if use_auto_detected_header:
+                        auto_headers = sub_df_raw.iloc[0, non_empty_cols_indices].tolist()
+                        auto_rows = sub_df_raw.iloc[1:, non_empty_cols_indices].values.tolist()
+                    else:
+                        # If not using the first row as header, generate default headers
+                        auto_headers = [f"Column_{i+1}" for i in range(len(non_empty_cols_indices))]
+                        auto_rows = sub_df_raw.iloc[:, non_empty_cols_indices].values.tolist()
 
                     headers = []
                     seen = {}
@@ -132,21 +258,40 @@ if uploaded_file is not None:
                             seen[h_str] = 0
                         headers.append(h_str)
 
-                    df_auto_detected = pd.DataFrame(auto_rows, columns=headers)
+                    # Ensure rows are correctly padded/truncated to match header length
+                    adjusted_auto_rows = []
+                    expected_cols_auto = len(headers)
+                    for row in auto_rows:
+                        if len(row) < expected_cols_auto:
+                            adjusted_auto_rows.append(list(row) + [None] * (expected_cols_auto - len(row)))
+                        else:
+                            adjusted_auto_rows.append(list(row[:expected_cols_auto]))
+                            
+                    df_auto_detected = pd.DataFrame(adjusted_auto_rows, columns=headers)
                     df_auto_detected = df_auto_detected.dropna(how="all")
 
                     if 'Order' not in df_auto_detected.columns:
                         df_auto_detected.insert(0, 'Order', range(1, len(df_auto_detected) + 1))
 
                 else:
-                    st.warning("No contiguous data block found for auto-detection in columns.")
+                    st.warning("No contiguous data block found for auto-detection in columns within the detected rows.")
             else:
-                st.warning("No non-empty rows found for auto-detection.")
+                st.warning("No non-empty rows found for auto-detection. The sheet might be entirely blank or formatted unusually.")
 
             df_initial = df_auto_detected
 
-        # --- Session State Management ---
-        current_data_selection_id = f"{uploaded_file.file_id}-{selected_sheet}-{selection_method}-{start_row_manual}-{end_row_manual}-{start_col_manual}-{end_col_manual}-{use_first_row_as_header_manual}"
+        # --- Session State Management for current_df and history ---
+        # Create a unique ID to determine if the base data selection has changed
+        current_data_selection_id = (
+            f"{uploaded_file.file_id}-"
+            f"{selected_sheet}-"
+            f"{selection_method}-"
+            f"{st.session_state.get('start_row_manual_val', '')}-"
+            f"{st.session_state.get('end_row_manual_val', '')}-"
+            f"{st.session_state.get('start_col_manual_val', '')}-"
+            f"{st.session_state.get('end_col_manual_val', '')}-"
+            f"{st.session_state.get('use_header_manual_val', '')}"
+        )
 
         if "last_processed_file_id" not in st.session_state or st.session_state.last_processed_file_id != current_data_selection_id:
             st.session_state.current_df = df_initial.copy()
@@ -154,6 +299,7 @@ if uploaded_file is not None:
             st.session_state.last_processed_file_id = current_data_selection_id
             st.info("New file, sheet, or selection parameters detected. Table and history reset.")
         elif st.session_state.current_df.empty and not df_initial.empty:
+            # Re-initialize if the previous data was empty but new detection isn't
             st.session_state.current_df = df_initial.copy()
             st.session_state.history = []
             st.session_state.last_processed_file_id = current_data_selection_id
@@ -162,78 +308,90 @@ if uploaded_file is not None:
         # --- Display and Editing UI ---
         if not st.session_state.current_df.empty:
             st.subheader("✏️ Edit Table and Reorder Rows")
-            st.info("To reorder rows, edit the numbers in the 'Order' column. To delete a row, click the 'X' button on the right.")
+            st.info("To reorder rows, edit the numbers in the 'Order' column. To delete a row, click the 'X' button on the right of the row in the table.")
 
             # Ensure 'Order' column is numeric for proper sorting
             st.session_state.current_df['Order'] = pd.to_numeric(st.session_state.current_df['Order'], errors='coerce').fillna(0).astype(int)
 
             edited_df = st.data_editor(
                 st.session_state.current_df,
-                num_rows="dynamic",
+                num_rows="dynamic", # Allows adding/deleting rows directly in the editor
                 use_container_width=True,
                 column_config={
                     "Order": st.column_config.NumberColumn(
                         "Order",
                         help="Assign a number to reorder rows.",
-                        default=0,
+                        default=0, # Default value for new rows' order
                         step=1,
                         format="%d"
                     )
-                }
+                },
+                key="main_data_editor" # Unique key for the data editor
             )
 
+            # Check if edited_df is different from current_df
+            # This triggers a history save and success message
             if not edited_df.equals(st.session_state.current_df):
                 st.session_state.history.append(st.session_state.current_df.copy())
                 st.session_state.current_df = edited_df.copy()
-                st.success("Changes detected. Save or Apply Order to confirm.")
+                st.success("Changes detected. Apply order or continue editing.")
+                st.rerun() # Rerun to reflect changes immediately and prevent edit conflicts
 
             if st.button("Apply New Row Order"):
                 if 'Order' in st.session_state.current_df.columns:
                     temp_df = st.session_state.current_df.copy()
 
+                    # Handle duplicate order numbers by adding a decimal for stable sort
+                    # For example, if two rows have order 5, they become 5.0 and 5.1
                     temp_df['Order_temp_sort'] = temp_df['Order']
                     if temp_df['Order_temp_sort'].duplicated().any():
-                        temp_df['Order_temp_sort'] = temp_df.groupby('Order_temp_sort').cumcount().add(1).astype(str)
-                        temp_df['Order_temp_sort'] = temp_df['Order'].astype(str) + '.' + temp_df['Order_temp_sort']
+                        # Add a unique identifier for duplicates to maintain relative order
+                        # This creates values like 5.0, 5.1, 5.2 if there are multiple 5s
+                        temp_df['Order_temp_sort'] = temp_df['Order'].astype(str) + '.' + temp_df.groupby('Order_temp_sort').cumcount().astype(str)
                         temp_df['Order_temp_sort'] = pd.to_numeric(temp_df['Order_temp_sort'], errors='coerce')
 
                     st.session_state.current_df = temp_df.sort_values(by='Order_temp_sort', ascending=True).drop(columns=['Order_temp_sort']).reset_index(drop=True)
                     st.success("Rows reordered successfully!")
-                    st.rerun()
+                    st.rerun() # Rerun to update the displayed dataframe with new order
 
                 else:
                     st.warning("No 'Order' column found to reorder rows.")
 
             st.subheader("🔗 Combine Rows")
             st.write("Current table row indices:")
+            # Display current indices for user reference
             st.dataframe(st.session_state.current_df.index.to_frame(name='Index'), use_container_width=True)
             st.info("Please select rows using the indices displayed above for the *current table*.")
 
-            selected_rows = st.multiselect(
+            selected_rows_to_combine = st.multiselect(
                 "Select rows to combine (by current table index)",
-                st.session_state.current_df.index.tolist()
+                st.session_state.current_df.index.tolist(),
+                key="combine_rows_multiselect"
             )
-            custom_name = st.text_input("Custom name for the new combined row", value="Combined Row")
+            custom_name_for_combined_row = st.text_input("Custom name for the new combined row", value="Combined Row", key="custom_combined_row_name")
 
             if st.button("Combine Selected Rows"):
-                if selected_rows:
-                    st.session_state.history.append(st.session_state.current_df.copy())
+                if selected_rows_to_combine:
+                    st.session_state.history.append(st.session_state.current_df.copy()) # Save current state
 
                     combined_row_data = {}
-                    selected_df = st.session_state.current_df.loc[selected_rows]
+                    selected_df_for_combine = st.session_state.current_df.loc[selected_rows_to_combine]
 
                     for col in st.session_state.current_df.columns:
                         if pd.api.types.is_numeric_dtype(st.session_state.current_df[col]):
-                            combined_row_data[col] = selected_df[col].sum()
+                            combined_row_data[col] = selected_df_for_combine[col].sum()
                         else:
-                            combined_row_data[col] = " / ".join(selected_df[col].astype(str).fillna(''))
+                            # Join non-numeric values, handling NaNs
+                            combined_row_data[col] = " / ".join(selected_df_for_combine[col].dropna().astype(str).tolist())
+                            # Ensure the first column (often descriptive) gets the custom name
+                            if col == st.session_state.current_df.columns[0]:
+                                combined_row_data[col] = custom_name_for_combined_row
 
-                    if st.session_state.current_df.columns.size > 0:
-                        first_col_name = st.session_state.current_df.columns[0]
-                        combined_row_data[first_col_name] = custom_name
-
+                    # Create a new DataFrame for the single combined row
                     combined_df = pd.DataFrame([combined_row_data], columns=st.session_state.current_df.columns)
-                    remaining_df = st.session_state.current_df.drop(index=selected_rows)
+                    
+                    # Remove the original selected rows and add the new combined row
+                    remaining_df = st.session_state.current_df.drop(index=selected_rows_to_combine)
                     st.session_state.current_df = pd.concat([remaining_df, combined_df], ignore_index=True)
                     st.success("Rows combined successfully.")
                     st.rerun()
@@ -242,34 +400,47 @@ if uploaded_file is not None:
                     st.warning("No rows selected to combine.")
 
             st.subheader("🧬 Merge Columns")
-            selected_cols = st.multiselect("Select columns to merge", st.session_state.current_df.columns.tolist(), key="merge_cols")
-            new_col_name = st.text_input("New column name", value="MergedColumn")
+            selected_cols_to_merge = st.multiselect("Select columns to merge", st.session_state.current_df.columns.tolist(), key="merge_cols_multiselect")
+            new_merged_col_name = st.text_input("New column name for merged data", value="MergedColumn", key="new_merged_col_name_input")
+            
             if st.button("Merge Selected Columns"):
-                if selected_cols and len(selected_cols) >= 2:
-                    if new_col_name in st.session_state.current_df.columns and new_col_name not in selected_cols:
-                        st.error(f"Column '{new_col_name}' already exists. Please choose a different name or include it in columns to merge.")
+                if selected_cols_to_merge and len(selected_cols_to_merge) >= 2:
+                    # Check if the new column name conflicts with existing non-selected columns
+                    if new_merged_col_name in st.session_state.current_df.columns and new_merged_col_name not in selected_cols_to_merge:
+                        st.error(f"Column '{new_merged_col_name}' already exists. Please choose a different name or include it in columns to merge if you intend to overwrite.")
                     else:
-                        st.session_state.history.append(st.session_state.current_df.copy())
-                        st.session_state.current_df[new_col_name] = st.session_state.current_df[selected_cols].astype(str).agg(" / ".join, axis=1)
-                        st.session_state.current_df.drop(columns=selected_cols, inplace=True)
-                        st.success(f"Columns merged into '{new_col_name}'")
+                        st.session_state.history.append(st.session_state.current_df.copy()) # Save current state
+                        
+                        # Create the new merged column by joining string representations
+                        # Handle NaNs: dropna() removes NaNs before joining
+                        st.session_state.current_df[new_merged_col_name] = (
+                            st.session_state.current_df[selected_cols_to_merge]
+                            .astype(str)
+                            .agg(lambda x: " / ".join(x.dropna()), axis=1) # Join only non-NaN strings
+                        )
+                        # Drop the original columns that were merged
+                        st.session_state.current_df.drop(columns=selected_cols_to_merge, inplace=True)
+                        st.success(f"Columns merged into '{new_merged_col_name}'")
+                        st.rerun()
                 else:
                     st.warning("Please select at least two columns to merge.")
 
             if st.button("Undo Last Action"):
                 if st.session_state.history:
                     st.session_state.current_df = st.session_state.history.pop()
-                    st.success("Undo successful.")
-                    st.rerun()
+                    st.success("Undo successful. Table restored to previous state.")
+                    st.rerun() # Rerun to update the displayed dataframe
                 else:
-                    st.warning("No previous state to undo.")
+                    st.warning("No previous state to undo. History is empty.")
 
-            st.subheader("📋 Final Table")
-            final_df = st.session_state.current_df.dropna(how="all")
+            st.subheader("📋 Final Edited Table")
+            # Display the final, non-all-NA rows of the table
+            final_df = st.session_state.current_df.dropna(how="all").reset_index(drop=True)
             st.dataframe(final_df, use_container_width=True)
 
             st.subheader("📥 Download Modified Table")
             def to_excel(df_to_save):
+                """Converts a DataFrame to an Excel file in BytesIO object."""
                 output = BytesIO()
                 if not df_to_save.empty:
                     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -277,11 +448,12 @@ if uploaded_file is not None:
                 output.seek(0)
                 return output
 
+            # Generate Excel data for download
             excel_data = to_excel(final_df)
             st.download_button(
                 "Download as Excel",
                 data=excel_data,
-                file_name="modified_table.xlsx",
+                file_name="modified_subtable.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
@@ -289,7 +461,8 @@ if uploaded_file is not None:
             st.info("No data found for the selected range/auto-detection. Please adjust your selection or upload a different file.")
 
     except Exception as e:
-        st.error(f"An error occurred while processing the Excel file: {e}")
+        st.error(f"An unexpected error occurred while processing the Excel file: {e}")
+        st.exception(e) # Display full traceback for debugging
         st.info("Please ensure it's a valid Excel file with readable content and try again.")
 else:
     st.info("Please upload an Excel file to begin.")
