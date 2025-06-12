@@ -13,6 +13,9 @@ AUTO_FILL_END_ROW = 36
 AUTO_FILL_START_COL = 2
 AUTO_FILL_END_COL = 5
 
+# Define the order numbers to automatically remove
+ORDERS_TO_AUTO_REMOVE = [8, 10, 13]
+
 # --- File Upload Section (Moved to Sidebar) ---
 with st.sidebar:
     st.header("Upload Excel File")
@@ -280,6 +283,27 @@ if uploaded_file is not None:
 
             df_initial = df_auto_detected
 
+        # --- Automatic Row Removal based on Order Number ---
+        st.markdown("### 🧹 Automatic Row Removal")
+        auto_remove_orders_checkbox = st.checkbox(
+            f"Automatically remove rows with 'Order' numbers: {', '.join(map(str, ORDERS_TO_AUTO_REMOVE))}",
+            key="auto_remove_orders_checkbox"
+        )
+
+        if auto_remove_orders_checkbox and not df_initial.empty and 'Order' in df_initial.columns:
+            # Ensure 'Order' column is numeric for comparison
+            df_initial['Order'] = pd.to_numeric(df_initial['Order'], errors='coerce').fillna(0).astype(int)
+            
+            rows_before_removal = len(df_initial)
+            df_initial = df_initial[~df_initial['Order'].isin(ORDERS_TO_AUTO_REMOVE)]
+            rows_after_removal = len(df_initial)
+            
+            if rows_after_removal < rows_before_removal:
+                st.info(f"Automatically removed {rows_before_removal - rows_after_removal} rows based on 'Order' numbers.")
+            elif rows_after_removal == rows_before_removal and len(ORDERS_TO_AUTO_REMOVE) > 0:
+                st.info("No rows matching the auto-removal order numbers were found.")
+
+
         # --- Session State Management for current_df and history ---
         # Create a unique ID to determine if the base data selection has changed
         current_data_selection_id = (
@@ -290,7 +314,8 @@ if uploaded_file is not None:
             f"{st.session_state.get('end_row_manual_val', '')}-"
             f"{st.session_state.get('start_col_manual_val', '')}-"
             f"{st.session_state.get('end_col_manual_val', '')}-"
-            f"{st.session_state.get('use_header_manual_val', '')}"
+            f"{st.session_state.get('use_header_manual_val', '')}-"
+            f"{auto_remove_orders_checkbox}" # Include this in the ID
         )
 
         if "last_processed_file_id" not in st.session_state or st.session_state.last_processed_file_id != current_data_selection_id:
