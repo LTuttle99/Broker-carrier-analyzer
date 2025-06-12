@@ -11,50 +11,55 @@ uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
     try:
-        @st.cache_resource(ttl=3600)
-        def load_workbook_from_bytesio(file_buffer):
-            file_buffer.seek(0)
-            return openpyxl.load_workbook(file_buffer, data_only=True)
+        # Added st.spinner here for visual feedback during initial loading
+        with st.spinner("Loading Excel file..."):
+            @st.cache_resource(ttl=3600)
+            def load_workbook_from_bytesio(file_buffer):
+                file_buffer.seek(0)
+                return openpyxl.load_workbook(file_buffer, data_only=True)
 
-        @st.cache_data(ttl=3600)
-        def get_initial_dataframe(_workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
-            ws = _workbook[sheet_name]
+            @st.cache_data(ttl=3600)
+            def get_initial_dataframe(_workbook, sheet_name, start_row, end_row, start_col, end_col, use_first_row_as_header):
+                ws = _workbook[sheet_name]
 
-            data = [
-                list(row)
-                for row in ws.iter_rows(min_row=start_row, max_row=end_row, min_col=start_col, max_col=end_col, values_only=True)
-            ]
+                data = [
+                    list(row)
+                    for row in ws.iter_rows(min_row=start_row, max_row=end_row, min_col=start_col, max_col=end_col, values_only=True)
+                ]
 
-            if use_first_row_as_header and len(data) > 0:
-                raw_headers = list(data[0])
-                rows = data[1:]
-            else:
-                # IMPORTANT: Use (end_col - start_col + 1) for consistent header generation
-                raw_headers = [f"Column_{i+1}" for i in range(end_col - start_col + 1)]
-                rows = data
-
-            headers = []
-            seen = {}
-            for h in raw_headers:
-                h_str = str(h) if h is not None and str(h).strip() != "" else "Unnamed"
-                if h_str in seen:
-                    seen[h_str] += 1
-                    h_str = f"{h_str}_{seen[h_str]}"
+                if use_first_row_as_header and len(data) > 0:
+                    raw_headers = list(data[0])
+                    rows = data[1:]
                 else:
-                    seen[h_str] = 0
-                headers.append(h_str)
+                    # IMPORTANT: Use (end_col - start_col + 1) for consistent header generation
+                    raw_headers = [f"Column_{i+1}" for i in range(end_col - start_col + 1)]
+                    rows = data
 
-            df_result = pd.DataFrame(rows, columns=headers)
-            df_result = df_result.dropna(how="all")
+                headers = []
+                seen = {}
+                for h in raw_headers:
+                    h_str = str(h) if h is not None and str(h).strip() != "" else "Unnamed"
+                    if h_str in seen:
+                        seen[h_str] += 1
+                        h_str = f"{h_str}_{seen[h_str]}"
+                    else:
+                        seen[h_str] = 0
+                    headers.append(h_str)
 
-            # Add a default 'Order' column for reordering
-            if 'Order' not in df_result.columns:
-                 df_result.insert(0, 'Order', range(1, len(df_result) + 1)) # Add at the beginning, 1-indexed
+                df_result = pd.DataFrame(rows, columns=headers)
+                df_result = df_result.dropna(how="all")
 
-            return df_result
+                # Add a default 'Order' column for reordering
+                if 'Order' not in df_result.columns:
+                     df_result.insert(0, 'Order', range(1, len(df_result) + 1)) # Add at the beginning, 1-indexed
+
+                return df_result
 
 
-        wb = load_workbook_from_bytesio(uploaded_file)
+            wb = load_workbook_from_bytesio(uploaded_file)
+        
+        # End of spinner block
+        
         sheet_names = wb.sheetnames
 
         st.success("File loaded successfully!")
@@ -62,10 +67,9 @@ if uploaded_file is not None:
         selected_sheet = st.selectbox("Select a sheet", sheet_names)
         ws = wb[selected_sheet]
 
-        # FIX: Changed ws.max_col back to ws.max_column
         max_row = ws.max_row
-        max_column = ws.max_column # Corrected: max_column
-        st.write(f"Sheet dimensions: {max_row} rows, {max_column} columns") # Corrected: max_column
+        max_column = ws.max_column
+        st.write(f"Sheet dimensions: {max_row} rows, {max_column} columns")
 
         st.markdown("### 🔍 Choose Subtable Selection Method")
         selection_method = st.radio(
@@ -78,15 +82,15 @@ if uploaded_file is not None:
         start_row_manual = 1
         end_row_manual = min(start_row_manual + 10, max_row)
         start_col_manual = 1
-        end_col_manual = min(start_col_manual + 5, max_column) # Corrected: max_column
+        end_col_manual = min(start_col_manual + 5, max_column)
         use_first_row_as_header_manual = True
 
         if selection_method == "Manual Range Input":
             st.markdown("#### Manual Subtable Range Selection")
             start_row_manual = st.number_input("Start Row (from Excel file)", min_value=1, max_value=max_row, value=1, key="start_row_manual")
             end_row_manual = st.number_input("End Row (from Excel file)", min_value=start_row_manual, max_value=max_row, value=min(start_row_manual + 10, max_row), key="end_row_manual")
-            start_col_manual = st.number_input("Start Column (A=1)", min_value=1, max_value=max_column, value=1, key="start_col_manual") # Corrected: max_column
-            end_col_manual = st.number_input("End Column", min_value=start_col_manual, max_value=max_column, value=min(start_col_manual + 5, max_column), key="end_col_manual") # Corrected: max_column
+            start_col_manual = st.number_input("Start Column (A=1)", min_value=1, max_value=max_column, value=1, key="start_col_manual")
+            end_col_manual = st.number_input("End Column", min_value=start_col_manual, max_value=max_column, value=min(start_col_manual + 5, max_column), key="end_col_manual")
             use_first_row_as_header_manual = st.checkbox("Use first row of selection as header", value=True, key="use_header_manual")
 
             df_initial = get_initial_dataframe(wb, selected_sheet, start_row_manual, end_row_manual, start_col_manual, end_col_manual, use_first_row_as_header_manual)
