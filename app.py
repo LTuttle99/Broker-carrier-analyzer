@@ -325,7 +325,7 @@ if uploaded_file is not None:
                 
                 # Convert 'Order' column to numeric, coercing errors to NaN, then fill NaN with a value that won't match
                 # This ensures the comparison works even if 'Order' column has non-numeric entries
-                df_temp = st.session_state.current_df.copy()
+                df_temp = st.session_state.current_df.copy() # Operate on a copy
                 df_temp['Order_numeric'] = pd.to_numeric(df_temp['Order'], errors='coerce')
 
                 rows_to_keep_mask = ~df_temp['Order_numeric'].isin(ROWS_TO_AUTO_REMOVE)
@@ -333,13 +333,17 @@ if uploaded_file is not None:
                 # Check if any rows are actually being removed before updating history
                 if not rows_to_keep_mask.all(): # If not all rows are to be kept (i.e., some are to be removed)
                     st.session_state.history.append(st.session_state.current_df.copy()) # Save current state before removal
-                    st.session_state.current_df = st.session_state.current_df[rows_to_keep_mask].drop(columns=['Order_numeric']).reset_index(drop=True)
+                    
+                    # Apply filter and drop the temporary column from df_temp, then assign back
+                    st.session_state.current_df = df_temp[rows_to_keep_mask].drop(columns=['Order_numeric']).reset_index(drop=True)
+                    
                     removed_count = original_row_count - len(st.session_state.current_df)
                     st.success(f"Automatically removed {removed_count} row(s) based on predefined order numbers.")
                     st.rerun() # Rerun to display the filtered table
             st.markdown("---") # Separator for auto-filter options
 
         # --- Auto-combine specific rows ---
+        # Ensure we have enough rows and the 'Order' column before attempting to combine
         if not st.session_state.current_df.empty and 'Order' in st.session_state.current_df.columns and len(ROWS_TO_AUTO_COMBINE) > 1:
             st.markdown("### 🔗 Automatic Row Combination")
             auto_combine_toggle = st.checkbox(
@@ -349,14 +353,14 @@ if uploaded_file is not None:
 
             if auto_combine_toggle:
                 # Convert 'Order' column to numeric for robust comparison
-                df_temp = st.session_state.current_df.copy()
-                df_temp['Order_numeric'] = pd.to_numeric(df_temp['Order'], errors='coerce')
+                df_temp_combine = st.session_state.current_df.copy() # Operate on a copy
+                df_temp_combine['Order_numeric_combine'] = pd.to_numeric(df_temp_combine['Order'], errors='coerce')
 
-                # Find the actual indices of rows to combine based on 'Order_numeric'
+                # Find the actual indices of rows to combine based on 'Order_numeric_combine'
                 # Ensure we only pick rows that are currently present and match
-                indices_to_combine = df_temp[df_temp['Order_numeric'].isin(ROWS_TO_AUTO_COMBINE)].index.tolist()
+                indices_to_combine = df_temp_combine[df_temp_combine['Order_numeric_combine'].isin(ROWS_TO_AUTO_COMBINE)].index.tolist()
 
-                if len(indices_to_combine) > 1: # Only combine if at least two target rows exist
+                if len(indices_to_combine) >= 2: # Only combine if at least two target rows exist
                     st.session_state.history.append(st.session_state.current_df.copy()) # Save current state
 
                     combined_row_data = {}
@@ -368,8 +372,8 @@ if uploaded_file is not None:
                         else:
                             # Join non-numeric values, handling NaNs
                             combined_row_data[col] = " / ".join(selected_df_for_auto_combine[col].dropna().astype(str).tolist())
-                            # Assign the custom name to the first column, usually descriptive
-                            if col == st.session_state.current_df.columns[0]:
+                            # Ensure the first column (often descriptive) gets the custom name
+                            if col == st.session_state.current_df.columns[0]: # Target the first column of the original DF
                                 combined_row_data[col] = AUTO_COMBINED_ROW_NAME
 
                     # Create a new DataFrame for the single combined row
@@ -378,11 +382,13 @@ if uploaded_file is not None:
                     # Remove the original selected rows and add the new combined row
                     remaining_df = st.session_state.current_df.drop(index=indices_to_combine).reset_index(drop=True)
                     st.session_state.current_df = pd.concat([remaining_df, combined_df_new], ignore_index=True)
+                    
                     st.success(f"Automatically combined rows with Order {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} into '{AUTO_COMBINED_ROW_NAME}'.")
                     st.rerun()
                 else:
-                    st.warning(f"Could not auto-combine. Not enough rows with order numbers {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} found in the current table to combine.")
+                    st.warning(f"Could not auto-combine. Found {len(indices_to_combine)} row(s) with order numbers {', '.join(map(str, ROWS_TO_AUTO_COMBINE))}. At least 2 are required.")
             st.markdown("---") # Separator for auto-filter options
+
 
         # --- Display and Editing UI ---
         if not st.session_state.current_df.empty:
