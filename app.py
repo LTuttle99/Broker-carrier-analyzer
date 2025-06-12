@@ -366,15 +366,25 @@ if uploaded_file is not None:
                     combined_row_data = {}
                     selected_df_for_auto_combine = st.session_state.current_df.loc[indices_to_combine]
 
-                    for col in st.session_state.current_df.columns:
+                    for col_idx, col in enumerate(st.session_state.current_df.columns):
                         if pd.api.types.is_numeric_dtype(st.session_state.current_df[col]):
                             combined_row_data[col] = selected_df_for_auto_combine[col].sum()
                         else:
                             # Join non-numeric values, handling NaNs
-                            combined_row_data[col] = " / ".join(selected_df_for_auto_combine[col].dropna().astype(str).tolist())
-                            # Ensure the first column (often descriptive) gets the custom name
-                            if col == st.session_state.current_df.columns[0]: # Target the first column of the original DF
-                                combined_row_data[col] = AUTO_COMBINED_ROW_NAME
+                            joined_value = " / ".join(selected_df_for_auto_combine[col].dropna().astype(str).tolist())
+                            combined_row_data[col] = joined_value
+
+                    # Crucial: Ensure the first column gets the desired name if it exists and is not 'Order'
+                    # The 'Order' column should ideally retain its numeric property or be handled explicitly.
+                    # We assume the user wants the new name in the *first non-Order* column or the first column if Order doesn't exist.
+                    if st.session_state.current_df.columns[0] != 'Order':
+                        combined_row_data[st.session_state.current_df.columns[0]] = AUTO_COMBINED_ROW_NAME
+                    elif len(st.session_state.current_df.columns) > 1: # If 'Order' is the first, try the second
+                         # Find the first column that's not 'Order' if 'Order' is the first column.
+                        first_non_order_col = next((col for col in st.session_state.current_df.columns if col != 'Order'), None)
+                        if first_non_order_col:
+                            combined_row_data[first_non_order_col] = AUTO_COMBINED_ROW_NAME
+
 
                     # Create a new DataFrame for the single combined row
                     combined_df_new = pd.DataFrame([combined_row_data], columns=st.session_state.current_df.columns)
