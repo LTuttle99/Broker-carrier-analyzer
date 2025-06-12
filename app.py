@@ -312,6 +312,10 @@ if uploaded_file is not None:
             st.session_state.last_processed_file_id = current_data_selection_id
             st.info("Re-initializing table from file as previous data was empty.")
 
+        # Initialize data_editor_output_df in session state if not present
+        if 'data_editor_output_df' not in st.session_state:
+            st.session_state.data_editor_output_df = st.session_state.current_df.copy()
+
         # --- Auto-remove specific rows ---
         if not st.session_state.current_df.empty and 'Order' in st.session_state.current_df.columns:
             st.markdown("### 🗑️ Automatic Row Filtering")
@@ -324,18 +328,16 @@ if uploaded_file is not None:
                 original_row_count = len(st.session_state.current_df)
                 
                 # Convert 'Order' column to numeric, coercing errors to NaN, then fill NaN with a value that won't match
-                # This ensures the comparison works even if 'Order' column has non-numeric entries
                 df_temp = st.session_state.current_df.copy() # Operate on a copy
                 df_temp['Order_numeric'] = pd.to_numeric(df_temp['Order'], errors='coerce')
 
                 rows_to_keep_mask = ~df_temp['Order_numeric'].isin(ROWS_TO_AUTO_REMOVE)
                 
-                # Check if any rows are actually being removed before updating history
                 if not rows_to_keep_mask.all(): # If not all rows are to be kept (i.e., some are to be removed)
                     st.session_state.history.append(st.session_state.current_df.copy()) # Save current state before removal
                     
-                    # Apply filter and drop the temporary column from df_temp, then assign back
                     st.session_state.current_df = df_temp[rows_to_keep_mask].drop(columns=['Order_numeric']).reset_index(drop=True)
+                    st.session_state.data_editor_output_df = st.session_state.current_df.copy() # Also update the editor's source
                     
                     removed_count = original_row_count - len(st.session_state.current_df)
                     st.success(f"Automatically removed {removed_count} row(s) based on predefined order numbers.")
@@ -343,7 +345,6 @@ if uploaded_file is not None:
             st.markdown("---") # Separator for auto-filter options
 
         # --- Auto-combine specific rows ---
-        # Ensure we have enough rows and the 'Order' column before attempting to combine
         if not st.session_state.current_df.empty and 'Order' in st.session_state.current_df.columns and len(ROWS_TO_AUTO_COMBINE) > 1:
             st.markdown("### 🔗 Automatic Row Combination")
             auto_combine_toggle = st.checkbox(
@@ -352,16 +353,12 @@ if uploaded_file is not None:
             )
 
             if auto_combine_toggle:
-                # Convert 'Order' column to numeric for robust comparison
-                df_temp_combine = st.session_state.current_df.copy() # Operate on a copy
+                df_temp_combine = st.session_state.current_df.copy()
                 df_temp_combine['Order_numeric_combine'] = pd.to_numeric(df_temp_combine['Order'], errors='coerce')
-
-                # Find the actual indices of rows to combine based on 'Order_numeric_combine'
-                # Ensure we only pick rows that are currently present and match
                 indices_to_combine = df_temp_combine[df_temp_combine['Order_numeric_combine'].isin(ROWS_TO_AUTO_COMBINE)].index.tolist()
 
-                if len(indices_to_combine) >= 2: # Only combine if at least two target rows exist
-                    st.session_state.history.append(st.session_state.current_df.copy()) # Save current state
+                if len(indices_to_combine) >= 2:
+                    st.session_state.history.append(st.session_state.current_df.copy())
 
                     combined_row_data = {}
                     selected_df_for_auto_combine = st.session_state.current_df.loc[indices_to_combine]
@@ -370,15 +367,11 @@ if uploaded_file is not None:
                         if pd.api.types.is_numeric_dtype(st.session_state.current_df[col]):
                             combined_row_data[col] = selected_df_for_auto_combine[col].sum()
                         else:
-                            # Join non-numeric values, handling NaNs
                             joined_value = " / ".join(selected_df_for_auto_combine[col].dropna().astype(str).tolist())
                             combined_row_data[col] = joined_value
 
-                    # Crucial: Ensure the first column gets the desired name
-                    # Find the first column that's not 'Order' for the name, or use the first column if 'Order' is not present
                     target_name_col = None
                     if 'Order' in st.session_state.current_df.columns and len(st.session_state.current_df.columns) > 1:
-                        # Find the first column that isn't 'Order'
                         first_non_order_col = next((col for col in st.session_state.current_df.columns if col != 'Order'), None)
                         if first_non_order_col:
                             target_name_col = first_non_order_col
@@ -388,100 +381,96 @@ if uploaded_file is not None:
                     if target_name_col:
                         combined_row_data[target_name_col] = AUTO_COMBINED_ROW_NAME
 
-                    # Create a new DataFrame for the single combined row
                     combined_df_new = pd.DataFrame([combined_row_data], columns=st.session_state.current_df.columns)
                     
-                    # Remove the original selected rows and add the new combined row
                     remaining_df = st.session_state.current_df.drop(index=indices_to_combine).reset_index(drop=True)
                     st.session_state.current_df = pd.concat([remaining_df, combined_df_new], ignore_index=True)
-                    
+                    st.session_state.data_editor_output_df = st.session_state.current_df.copy() # Also update the editor's source
+
                     st.success(f"Automatically combined rows with Order {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} into '{AUTO_COMBINED_ROW_NAME}'.")
                     st.rerun()
                 else:
                     st.warning(f"Could not auto-combine. Found {len(indices_to_combine)} row(s) with order numbers {', '.join(map(str, ROWS_TO_AUTO_COMBINE))}. At least 2 are required.")
-            st.markdown("---") # Separator for auto-filter options
+            st.markdown("---")
 
 
         # --- Display and Editing UI ---
         if not st.session_state.current_df.empty:
             st.subheader("✏️ Edit Table and Prepare Operations")
-            st.info("Directly edit values or delete rows in the table. Use the selections below to prepare for combined operations.")
+            st.info("Directly edit values or delete rows in the table. Use the selections below to prepare for combined operations. Click 'Perform Selected Operations' to apply changes.")
 
-            # Ensure 'Order' column is numeric for proper sorting
+            # Ensure 'Order' column is numeric for proper sorting for the data editor
             st.session_state.current_df['Order'] = pd.to_numeric(st.session_state.current_df['Order'], errors='coerce').fillna(0).astype(int)
 
-            edited_df = st.data_editor(
-                st.session_state.current_df,
-                num_rows="dynamic", # Allows adding/deleting rows directly in the editor
+            # Capture the output of data_editor into a specific session state variable
+            st.session_state.data_editor_output_df = st.data_editor(
+                st.session_state.current_df, # This is the source for the editor display
+                num_rows="dynamic",
                 use_container_width=True,
                 column_config={
                     "Order": st.column_config.NumberColumn(
                         "Order",
                         help="Assign a number to reorder rows.",
-                        default=0, # Default value for new rows' order
+                        default=0,
                         step=1,
                         format="%d"
                     )
                 },
-                key="main_data_editor" # Unique key for the data editor
+                key="main_data_editor"
             )
-
-            # Check if edited_df is different from current_df (from direct data editor interaction)
-            # This triggers a history save and success message
-            if not edited_df.equals(st.session_state.current_df):
-                st.session_state.history.append(st.session_state.current_df.copy())
-                st.session_state.current_df = edited_df.copy()
-                st.success("Table manually edited. Apply order or other operations below.")
-                st.rerun() # Rerun to reflect changes immediately and prevent edit conflicts
+            # IMPORTANT: The immediate `if not edited_df.equals(st.session_state.current_df):` block is removed here.
+            # Changes from the editor are now staged in st.session_state.data_editor_output_df.
 
             st.subheader("🔗 Row Combination Options")
             st.write("Current table row indices for selection:")
-            st.dataframe(st.session_state.current_df.index.to_frame(name='Index'), use_container_width=True)
+            # Display current indices from the data_editor_output_df for user reference
+            st.dataframe(st.session_state.data_editor_output_df.index.to_frame(name='Index'), use_container_width=True)
             st.info("Select rows by their current table index (leftmost column) for combination.")
 
             selected_rows_to_combine = st.multiselect(
                 "Select rows to combine (by current table index)",
-                st.session_state.current_df.index.tolist(),
+                st.session_state.data_editor_output_df.index.tolist(), # Populate based on editor's current indices
                 key="combine_rows_multiselect"
             )
             custom_name_for_combined_row = st.text_input("Custom name for the new combined row", value="Combined Row", key="custom_combined_row_name")
 
             st.subheader("🧬 Column Merging Options")
-            selected_cols_to_merge = st.multiselect("Select columns to merge", st.session_state.current_df.columns.tolist(), key="merge_cols_multiselect")
+            selected_cols_to_merge = st.multiselect("Select columns to merge", st.session_state.data_editor_output_df.columns.tolist(), key="merge_cols_multiselect")
             new_merged_col_name = st.text_input("New column name for merged data", value="MergedColumn", key="new_merged_col_name_input")
             
             st.markdown("---")
             # --- Single Button for All Operations ---
             if st.button("Perform Selected Operations", type="primary"):
-                if not st.session_state.current_df.empty:
-                    st.session_state.history.append(st.session_state.current_df.copy()) # Save state BEFORE any operations
-                    df_to_process = st.session_state.current_df.copy()
+                if not st.session_state.data_editor_output_df.empty:
+                    # Save the state *before* any of these operations are performed
+                    st.session_state.history.append(st.session_state.current_df.copy()) 
+                    
+                    # Start with the DataFrame from the data editor's current state
+                    df_to_process = st.session_state.data_editor_output_df.copy()
                     
                     messages = []
 
-                    # 1. Apply New Row Order
+                    # 1. Apply New Row Order (based on 'Order' column edited in data_editor)
                     if 'Order' in df_to_process.columns:
                         temp_df = df_to_process.copy()
-                        temp_df['Order_temp_sort'] = temp_df['Order']
-                        if temp_df['Order_temp_sort'].duplicated().any():
-                            temp_df['Order_temp_sort'] = temp_df['Order'].astype(str) + '.' + temp_df.groupby('Order_temp_sort').cumcount().astype(str)
-                            temp_df['Order_temp_sort'] = pd.to_numeric(temp_df['Order_temp_sort'], errors='coerce')
+                        # Convert to numeric, coercing errors, for sorting
+                        temp_df['Order_temp_sort'] = pd.to_numeric(temp_df['Order'], errors='coerce').fillna(0).astype(int)
                         
-                        df_to_process = temp_df.sort_values(by='Order_temp_sort', ascending=True).drop(columns=['Order_temp_sort']).reset_index(drop=True)
-                        messages.append("Rows reordered successfully.")
+                        # Handle duplicate order numbers for stable sort
+                        if temp_df['Order_temp_sort'].duplicated().any():
+                            temp_df['Order_temp_sort_with_tiebreaker'] = temp_df['Order_temp_sort'].astype(str) + '.' + temp_df.groupby('Order_temp_sort').cumcount().astype(str)
+                            temp_df['Order_temp_sort_with_tiebreaker'] = pd.to_numeric(temp_df['Order_temp_sort_with_tiebreaker'], errors='coerce')
+                            df_to_process = temp_df.sort_values(by='Order_temp_sort_with_tiebreaker', ascending=True).drop(columns=['Order_temp_sort', 'Order_temp_sort_with_tiebreaker']).reset_index(drop=True)
+                        else:
+                            df_to_process = temp_df.sort_values(by='Order_temp_sort', ascending=True).drop(columns=['Order_temp_sort']).reset_index(drop=True)
+
+                        messages.append("Rows reordered successfully (based on 'Order' column).")
                     else:
                         messages.append("Skipped row reordering: No 'Order' column found.")
 
-                    # 2. Combine Selected Rows
+                    # 2. Combine Selected Rows (operate on df_to_process which might be reordered)
                     if selected_rows_to_combine:
-                        # Re-verify indices based on the current state of df_to_process after potential reordering
-                        # It's safer to use a boolean mask or merge based on content if indices changed
-                        # For simplicity here, we assume selected_rows_to_combine still refer to valid indices
-                        # from the *last displayed table*. If the reorder moved them, this might be tricky.
-                        # For robustness, you might map 'Order' numbers or unique IDs instead of indices if possible.
-                        # For now, sticking to indices as previously implemented:
-                        
-                        # Filter for rows that are still present and were selected
+                        # Validate indices against the current df_to_process, as indices might have changed due to reordering
                         valid_indices_to_combine = [idx for idx in selected_rows_to_combine if idx in df_to_process.index]
 
                         if len(valid_indices_to_combine) >= 2:
@@ -495,7 +484,7 @@ if uploaded_file is not None:
                                     joined_value = " / ".join(selected_df_for_combine[col_name].dropna().astype(str).tolist())
                                     combined_row_data[col_name] = joined_value
 
-                            # Assign the custom name to the first column (or the first non-'Order' column if 'Order' exists)
+                            # Assign the custom name
                             target_name_col = None
                             if 'Order' in df_to_process.columns and len(df_to_process.columns) > 1:
                                 target_name_col = next((col for col in df_to_process.columns if col != 'Order'), None)
@@ -517,9 +506,8 @@ if uploaded_file is not None:
                         messages.append("Skipped row combination: No rows selected to combine.")
 
 
-                    # 3. Merge Selected Columns
+                    # 3. Merge Selected Columns (operate on df_to_process which might be reordered/combined)
                     if selected_cols_to_merge and len(selected_cols_to_merge) >= 2:
-                        # Check for conflict only with columns *not* being merged
                         existing_non_selected_cols = [col for col in df_to_process.columns if col not in selected_cols_to_merge]
                         if new_merged_col_name in existing_non_selected_cols:
                             messages.append(f"Skipped column merge: Column '{new_merged_col_name}' already exists and is not part of the merge selection. Please choose a different name.")
@@ -534,7 +522,10 @@ if uploaded_file is not None:
                     else:
                         messages.append("Skipped column merge: Please select at least two columns to merge.")
                     
-                    st.session_state.current_df = df_to_process # Update the main DataFrame
+                    # Update the main DataFrame in session state with the result of all operations
+                    st.session_state.current_df = df_to_process 
+                    # Also update the data_editor's internal state so it reflects the changes
+                    st.session_state.data_editor_output_df = df_to_process.copy()
                     
                     for msg in messages: # Display all messages
                         st.info(msg)
@@ -546,6 +537,7 @@ if uploaded_file is not None:
             if st.button("Undo Last Action"):
                 if st.session_state.history:
                     st.session_state.current_df = st.session_state.history.pop()
+                    st.session_state.data_editor_output_df = st.session_state.current_df.copy() # Sync editor state
                     st.success("Undo successful. Table restored to previous state.")
                     st.rerun() # Rerun to update the displayed dataframe
                 else:
