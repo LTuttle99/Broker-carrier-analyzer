@@ -3,7 +3,7 @@ import pandas as pd
 import openpyxl
 from io import BytesIO
 
-st.set_page_config(page_title="Specific Excel Table Processor", layout="wide")
+st.set_page_config(page_title="Earned Commission Table Extractor", layout="wide")
 st.title("⚙️ Specific Excel Table Processor (Automated)")
 
 # --- Configuration Constants for the Specific File ---
