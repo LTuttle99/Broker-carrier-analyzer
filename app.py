@@ -303,6 +303,9 @@ if uploaded_file is not None:
             st.subheader("📋 Final Processed Table")
             # Display the final, non-all-NA rows of the table
             final_df_specific = st.session_state.current_df_specific.dropna(how="all").reset_index(drop=True)
+            # --- Remove 'Order' column for final display and download ---
+            if 'Order' in final_df_specific.columns:
+                final_df_specific = final_df_specific.drop(columns=['Order'])
             st.dataframe(final_df_specific, use_container_width=True)
 
             st.subheader("📥 Download Modified Table")
@@ -316,7 +319,7 @@ if uploaded_file is not None:
                 return output
 
             # Generate Excel data for download
-            excel_data_specific = to_excel_specific(final_df_specific)
+            excel_data_specific = to_excel_specific(final_df_specific) # Use the df *without* the 'Order' column
             st.download_button(
                 "Download Processed Table as Excel",
                 data=excel_data_specific,
