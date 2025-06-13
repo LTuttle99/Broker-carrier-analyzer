@@ -4,7 +4,7 @@ import openpyxl
 from io import BytesIO
 
 st.set_page_config(page_title="Earned Commission Table Extractor", layout="wide")
-st.title("⚙️ Specific Excel Table Processor (Automated)")
+st.title("⚙️ Earned Commission Table Extractor (Automated)")
 
 # --- Configuration Constants for the Specific File ---
 # Define the default auto-fill values for the toggle switch
