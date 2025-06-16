@@ -1,6 +1,6 @@
-import streamlit as st
 import pandas as pd
 import openpyxl
+import streamlit as st
 from io import BytesIO
 
 st.set_page_config(page_title="Earned Commission Table Extractor", layout="wide")
@@ -96,11 +96,7 @@ def to_excel_specific(df_to_save):
 # --- Main App Logic ---
 with st.sidebar:
     st.header("Upload Excel File")
-    # Using a dynamic key for file_uploader ensures it truly resets if the user
-    # "re-uploads" the same file, by forcing Streamlit to treat it as a new widget instance.
-    # However, Streamlit's file_id is usually sufficient for actual file content changes.
-    # We'll rely on file_id for content change detection.
-    uploaded_file = st.file_uploader("Upload your specific Excel file", type=["xlsx", "xls"])
+    uploaded_file = st.file_uploader("Upload your specific Excel file", type=["xlsx", "xls"], key="file_uploader_specific")
     st.markdown("---")
 
 if uploaded_file is not None:
@@ -108,7 +104,23 @@ if uploaded_file is not None:
         # Get a unique identifier for the current file to manage session state
         current_file_id = uploaded_file.file_id
 
-        # Load the workbook and get sheet names immediately
+        # Initialize session state if not already done
+        if "last_file_id" not in st.session_state:
+            st.session_state.last_file_id = None
+
+        # Detect if a new file has been uploaded
+        if st.session_state.last_file_id != current_file_id:
+            # Clear caches explicitly
+            load_workbook_from_bytesio.clear()
+            get_initial_dataframe.clear()
+            # Reset session state
+            st.session_state.current_df_specific = None
+            st.session_state.history_specific = []
+            st.session_state.last_initial_data_hash = None
+            st.session_state.auto_processing_done = False
+            st.session_state.last_file_id = current_file_id
+
+        # Load the workbook and get sheet names
         with st.spinner("Loading Excel file..."):
             wb = load_workbook_from_bytesio(uploaded_file)
         st.success("File loaded successfully!")
@@ -118,14 +130,14 @@ if uploaded_file is not None:
         with st.sidebar:
             st.header("Sheet Selection")
             default_sheet_index = 0
-            if "Sheet1" in sheet_names: # Prioritize "Sheet1" if it exists
+            if "Sheet1" in sheet_names:
                 default_sheet_index = sheet_names.index("Sheet1")
             
             selected_sheet = st.selectbox(
                 "Select the relevant sheet", 
                 sheet_names, 
                 index=default_sheet_index, 
-                key="selected_sheet_sidebar_specific" # Unique key
+                key="selected_sheet_sidebar_specific"
             )
             ws = wb[selected_sheet]
             max_row = ws.max_row
@@ -139,7 +151,7 @@ if uploaded_file is not None:
         auto_fill_toggle_specific = st.toggle(
             f"Use predefined range (Rows {AUTO_FILL_START_ROW}-{AUTO_FILL_END_ROW}, Cols {AUTO_FILL_START_COL}-{AUTO_FILL_END_COL})",
             value=True,
-            key="auto_fill_toggle_switch_specific" # Unique key
+            key="auto_fill_toggle_switch_specific"
         )
         
         # Determine current range based on toggle
@@ -151,7 +163,6 @@ if uploaded_file is not None:
             current_use_header = True
             st.info("Predefined table range is active.")
         else:
-            # Fallback if toggle is somehow turned off, though UI doesn't allow it
             st.warning("Manual adjustment is not available in this simplified app version. Please use the predefined range.")
             current_start_row = AUTO_FILL_START_ROW
             current_end_row = AUTO_FILL_END_ROW
@@ -159,8 +170,7 @@ if uploaded_file is not None:
             current_end_col = AUTO_FILL_END_COL
             current_use_header = True
 
-        # Create a unique identifier for the *current state of initial data extraction*
-        # This includes file ID, selected sheet, and range parameters.
+        # Create a unique identifier for the current state of initial data extraction
         current_initial_data_hash = (
             f"{current_file_id}-"
             f"{selected_sheet}-"
@@ -175,25 +185,23 @@ if uploaded_file is not None:
         if "last_initial_data_hash" not in st.session_state or st.session_state.last_initial_data_hash != current_initial_data_hash:
             with st.spinner("Initializing table from file..."):
                 df_initial = get_initial_dataframe(wb, selected_sheet,
-                                                    current_start_row, current_end_row,
-                                                    current_start_col, current_end_col,
-                                                    current_use_header)
+                                                  current_start_row, current_end_row,
+                                                  current_start_col, current_end_col,
+                                                  current_use_header)
                 st.session_state.current_df_specific = df_initial.copy()
-                st.session_state.history_specific = [] # Clear history on new file/selection
+                st.session_state.history_specific = []
                 st.session_state.last_initial_data_hash = current_initial_data_hash
-                st.session_state.auto_processing_done = False # Reset auto-processing flag
+                st.session_state.auto_processing_done = False
 
                 if not df_initial.empty:
                     st.success("Table initialized. Applying automatic processes...")
                 else:
                     st.info("No data found for the predefined range in the selected sheet.")
                 
-                # Rerun immediately after initializing to proceed with auto-processing
                 st.rerun()
 
-        # --- Automatic Row Filtering and Combination (Applied only once per new file/initial data) ---
+        # --- Automatic Row Filtering and Combination ---
         if not st.session_state.auto_processing_done and not st.session_state.current_df_specific.empty:
-            
             df_to_process = st.session_state.current_df_specific.copy()
             modified = False
 
@@ -202,7 +210,7 @@ if uploaded_file is not None:
             auto_remove_toggle = st.checkbox(
                 f"Automatically remove rows with 'Order' numbers: {', '.join(map(str, ROWS_TO_AUTO_REMOVE))}",
                 value=True,
-                key="auto_remove_rows_toggle_specific" # Unique key
+                key="auto_remove_rows_toggle_specific"
             )
 
             if auto_remove_toggle and 'Order' in df_to_process.columns:
@@ -226,7 +234,7 @@ if uploaded_file is not None:
             auto_combine_toggle = st.checkbox(
                 f"Automatically combine rows with 'Order' numbers: {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} and rename to '{AUTO_COMBINED_ROW_NAME}'",
                 value=True,
-                key="auto_combine_rows_toggle_specific" # Unique key
+                key="auto_combine_rows_toggle_specific"
             )
 
             if auto_combine_toggle and 'Order' in df_to_process.columns and len(ROWS_TO_AUTO_COMBINE) > 1:
@@ -246,9 +254,8 @@ if uploaded_file is not None:
                             joined_value = " / ".join(selected_df_for_auto_combine[col].dropna().astype(str).tolist())
                             combined_row_data[col] = joined_value
                         
-                    # Handle the 'Order' column and the first non-'Order' column for the new row name
                     if 'Order' in df_to_process.columns:
-                        combined_row_data['Order'] = 999999 # Assign a high order number to place it at the end initially
+                        combined_row_data['Order'] = 999999
                     
                     first_non_order_col = next((col for col in df_to_process.columns if col != 'Order'), None)
                     if first_non_order_col:
@@ -265,26 +272,21 @@ if uploaded_file is not None:
                     st.warning(f"Could not auto-combine. Found {len(indices_to_combine)} row(s) with order numbers {', '.join(map(str, ROWS_TO_AUTO_COMBINE))}. At least 2 are required to combine.")
             st.markdown("---")
 
-            # Update session state with processed DataFrame and set flag
             if modified:
                 st.session_state.current_df_specific = df_to_process.copy()
             st.session_state.auto_processing_done = True
-            st.rerun() # Rerun once auto-processing is complete to show the result
+            st.rerun()
 
         # --- Display and Editing UI ---
-        # This part will always display the current_df_specific, which will have
-        # either the initial data, or the auto-processed data, or user-edited data.
         if not st.session_state.current_df_specific.empty:
             st.subheader("✏️ Review and Edit Table (Directly in Table)")
             st.info("You can directly edit cells in the table. To reorder rows, edit the numbers in the 'Order' column. To delete a row, click the 'X' button on the right of the row.")
 
-            # Ensure 'Order' column is numeric for proper sorting and data editor
-            # Use errors='coerce' to turn non-numeric into NaN, then fillna(0) and convert to int
             st.session_state.current_df_specific['Order'] = pd.to_numeric(st.session_state.current_df_specific['Order'], errors='coerce').fillna(0).astype(int)
 
             edited_df_specific = st.data_editor(
                 st.session_state.current_df_specific,
-                num_rows="dynamic", # Allows adding/deleting rows directly in the editor
+                num_rows="dynamic",
                 use_container_width=True,
                 column_config={
                     "Order": st.column_config.NumberColumn(
@@ -295,40 +297,32 @@ if uploaded_file is not None:
                         format="%d"
                     )
                 },
-                key="main_data_editor_specific" # Unique key for the data editor
+                key="main_data_editor_specific"
             )
 
-            # Check if edited_df is different from current_df
-            # st.data_editor handles internal state, so explicit .equals check and rerun is good.
             if not edited_df_specific.equals(st.session_state.current_df_specific):
-                # Only save to history if there's an actual change from user editing
-                # This prevents saving the intermediate states of auto-processing to history
-                if st.session_state.auto_processing_done: # Ensure auto-processing is done before logging user edits
+                if st.session_state.auto_processing_done:
                     st.session_state.history_specific.append(st.session_state.current_df_specific.copy())
                 st.session_state.current_df_specific = edited_df_specific.copy()
                 st.success("Changes detected. Apply order or continue editing.")
-                st.rerun() # Rerun to ensure the changes are reflected and potentially trigger further UI updates
+                st.rerun()
 
             if st.button("Apply Manual Row Order Changes", key="apply_order_specific_manual"):
                 if 'Order' in st.session_state.current_df_specific.columns:
                     temp_df = st.session_state.current_df_specific.copy()
-                    # Handle duplicate order numbers gracefully for sorting
                     temp_df['Order_temp_sort'] = temp_df['Order']
                     if temp_df['Order_temp_sort'].duplicated().any():
-                        # Append a unique identifier for stable sort among duplicates
                         temp_df['Order_temp_sort'] = temp_df['Order'].astype(str) + '.' + temp_df.groupby('Order_temp_sort').cumcount().astype(str)
-                        temp_df['Order_temp_sort'] = pd.to_numeric(temp_df['Order_temp_sort'], errors='coerce') # Convert back to numeric for sorting
+                        temp_df['Order_temp_sort'] = pd.to_numeric(temp_df['Order_temp_sort'], errors='coerce')
                         
                     st.session_state.current_df_specific = temp_df.sort_values(by='Order_temp_sort', ascending=True).drop(columns=['Order_temp_sort']).reset_index(drop=True)
                     st.success("Rows reordered successfully!")
-                    st.rerun() # Rerun to display the sorted table
+                    st.rerun()
                 else:
                     st.warning("No 'Order' column found to reorder rows.")
             
             st.subheader("📋 Final Processed Table")
-            # Display the final, non-all-NA rows of the table
             final_df_specific = st.session_state.current_df_specific.dropna(how="all").reset_index(drop=True)
-            # Remove 'Order' column for final display and download
             if 'Order' in final_df_specific.columns:
                 final_df_specific = final_df_specific.drop(columns=['Order'])
             
@@ -341,15 +335,12 @@ if uploaded_file is not None:
                 data=excel_data_specific,
                 file_name="processed_specific_table.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_specific" # Unique key
+                key="download_specific"
             )
-
-        # else: This case is handled by the initial 'if not df_initial.empty' block now
-        # st.info("No data found for the predefined range. Please check your Excel file or the predefined range settings.")
 
     except Exception as e:
         st.error(f"An unexpected error occurred while processing the Excel file: {e}")
-        st.exception(e) # Display full traceback for debugging
+        st.exception(e)
         st.info("Please ensure it's a valid Excel file with readable content and try again.")
 else:
     st.info("Please upload your Excel file to begin processing.")
