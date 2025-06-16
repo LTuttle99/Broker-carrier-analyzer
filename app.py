@@ -88,29 +88,33 @@ def get_initial_dataframe(_workbook, sheet_name, start_row, end_row, start_col, 
 # --- Main App Logic ---
 with st.sidebar:
     st.header("Upload Excel File")
-    uploaded_file = st.file_uploader("Upload your specific Excel file", type=["xlsx", "xls"])
+    uploaded_file = st.file_uploader("Upload your specific Excel file", type=["xlsx", "xls"], key="file_uploader_specific")
     st.markdown("---")
 
 if uploaded_file is not None:
     try:
-        with st.spinner("Loading Excel file..."):
-            wb = load_workbook_from_bytesio(uploaded_file)
-        
-        sheet_names = wb.sheetnames
-        st.success("File loaded successfully!")
+        # Check if a new file has been uploaded or if file_id has changed
+        # We also need to consider if the content of the file has changed even if the name is the same.
+        # Streamlit's file_uploader provides a unique hash for the file content.
+        current_file_hash = uploaded_file.file_id
 
+        # Use a more comprehensive ID for session state to truly detect new files or parameter changes
+        # The sheet name and auto-fill range are also part of the "initial data"
+        
+        # Load workbook and get sheet names first to define current_data_selection_id
+        wb = load_workbook_from_bytesio(uploaded_file)
+        sheet_names = wb.sheetnames
+        
         with st.sidebar:
             st.header("Sheet Selection")
-            # For this specific app, we might even default the sheet if it's always the same
-            # For now, keep selectbox but set default to first sheet if possible
             default_sheet_index = 0
-            if "Sheet1" in sheet_names: # Example: If you know it's always "Sheet1"
+            if "Sheet1" in sheet_names:
                 default_sheet_index = sheet_names.index("Sheet1")
             
             selected_sheet = st.selectbox(
                 "Select the relevant sheet", 
                 sheet_names, 
-                index=default_sheet_index, # Set default sheet
+                index=default_sheet_index, 
                 key="selected_sheet_sidebar_specific"
             )
             ws = wb[selected_sheet]
@@ -121,14 +125,12 @@ if uploaded_file is not None:
 
         st.markdown("### Automatically Process Specific Table")
 
-        # Force auto-fill to be active by default for this specific app version
         auto_fill_toggle_specific = st.toggle(
             f"Use predefined range (Rows {AUTO_FILL_START_ROW}-{AUTO_FILL_END_ROW}, Cols {AUTO_FILL_START_COL}-{AUTO_FILL_END_COL})",
-            value=True, # Default to True
+            value=True,
             key="auto_fill_toggle_switch_specific"
         )
-        
-        # If auto-fill is active, set the values. (No manual adjustments visible for this version)
+            
         if auto_fill_toggle_specific:
             current_start_row = AUTO_FILL_START_ROW
             current_end_row = AUTO_FILL_END_ROW
@@ -137,8 +139,6 @@ if uploaded_file is not None:
             current_use_header = True
             st.info("Predefined table range is active.")
         else:
-            # Although the toggle defaults to True, if a user somehow untoggles,
-            # we need fallback values to prevent errors. They won't see inputs.
             st.warning("Manual adjustment is not available in this simplified app version. Please use the predefined range.")
             current_start_row = AUTO_FILL_START_ROW
             current_end_row = AUTO_FILL_END_ROW
@@ -146,17 +146,10 @@ if uploaded_file is not None:
             current_end_col = AUTO_FILL_END_COL
             current_use_header = True
 
-
-        df_initial = get_initial_dataframe(wb, selected_sheet,
-                                             current_start_row, current_end_row,
-                                             current_start_col, current_end_col,
-                                             current_use_header)
-
-        # Session State Management for current_df and history
         current_data_selection_id = (
-            f"{uploaded_file.file_id}-"
+            f"{current_file_hash}-"
             f"{selected_sheet}-"
-            f"{current_start_row}-" # These now effectively define the base for this specific app
+            f"{current_start_row}-"
             f"{current_end_row}-"
             f"{current_start_col}-"
             f"{current_end_col}-"
@@ -164,103 +157,110 @@ if uploaded_file is not None:
         )
 
         # Initialize or reset the DataFrame and history based on selection ID
-        if "last_processed_file_id_specific" not in st.session_state or st.session_state.last_processed_file_id_specific != current_data_selection_id:
-            st.session_state.current_df_specific = df_initial.copy()
-            st.session_state.history_specific = [] # Clear history on new selection
-            st.session_state.last_processed_file_id_specific = current_data_selection_id
-            if not df_initial.empty: # Only show info if actual data is loaded
-                st.info("Table initialized from predefined range.")
-        elif st.session_state.current_df_specific.empty and not df_initial.empty:
-            # Re-initialize if the previous data was empty but new detection isn't
-            st.session_state.current_df_specific = df_initial.copy()
-            st.session_state.history_specific = []
-            st.session_state.last_processed_file_id_specific = current_data_selection_id
-            st.info("Re-initializing table from file as previous data was empty.")
-
-        # --- Automatic Row Filtering ---
-        if not st.session_state.current_df_specific.empty and 'Order' in st.session_state.current_df_specific.columns:
+        if "last_processed_data_id_specific" not in st.session_state or st.session_state.last_processed_data_id_specific != current_data_selection_id:
+            with st.spinner("Loading and initializing table..."):
+                df_initial = get_initial_dataframe(wb, selected_sheet,
+                                                    current_start_row, current_end_row,
+                                                    current_start_col, current_end_col,
+                                                    current_use_header)
+                st.session_state.current_df_specific = df_initial.copy()
+                st.session_state.history_specific = [] # Clear history on new selection
+                st.session_state.last_processed_data_id_specific = current_data_selection_id
+                st.session_state.auto_processing_applied = False # Reset flag for auto-processing
+                if not df_initial.empty:
+                    st.success("Table initialized from predefined range. Auto-processing will now apply.")
+                else:
+                    st.info("No data found for the predefined range. Please check your Excel file or the predefined range settings.")
+                st.rerun() # Rerun to apply initial state and automatic processing
+        
+        # Only apply automatic processing if it hasn't been applied for the current data selection
+        if not st.session_state.auto_processing_applied and not st.session_state.current_df_specific.empty:
+            
+            # --- Automatic Row Filtering ---
             st.markdown("### 🗑️ Automatic Row Filtering")
-            # Default to True, as per your request for this specific app
             auto_remove_toggle = st.checkbox(
                 f"Automatically remove rows with 'Order' numbers: {', '.join(map(str, ROWS_TO_AUTO_REMOVE))}",
                 value=True,
                 key="auto_remove_rows_toggle_specific"
             )
 
-            if auto_remove_toggle:
+            if auto_remove_toggle and 'Order' in st.session_state.current_df_specific.columns:
                 original_row_count = len(st.session_state.current_df_specific)
                 df_temp = st.session_state.current_df_specific.copy()
                 df_temp['Order_numeric'] = pd.to_numeric(df_temp['Order'], errors='coerce')
 
                 rows_to_keep_mask = ~df_temp['Order_numeric'].isin(ROWS_TO_AUTO_REMOVE)
                 
-                # Check if any rows are actually being removed before updating history
                 if not rows_to_keep_mask.all():
-                    st.session_state.history_specific.append(st.session_state.current_df_specific.copy()) # Save current state
+                    # No need to save to history here if it's part of initial auto-processing
+                    # st.session_state.history_specific.append(st.session_state.current_df_specific.copy()) 
                     st.session_state.current_df_specific = df_temp[rows_to_keep_mask].drop(columns=['Order_numeric']).reset_index(drop=True)
                     removed_count = original_row_count - len(st.session_state.current_df_specific)
                     st.success(f"Automatically removed {removed_count} row(s) based on predefined order numbers.")
-                    st.rerun() # Rerun to display the filtered table immediately
-            st.markdown("---")
-
-        # --- Automatic Row Combination ---
-        if not st.session_state.current_df_specific.empty and 'Order' in st.session_state.current_df_specific.columns and len(ROWS_TO_AUTO_COMBINE) > 1:
-            st.markdown("### 🔗 Automatic Row Combination")
-            # Default to True, as per your request for this specific app
-            auto_combine_toggle = st.checkbox(
-                f"Automatically combine rows with 'Order' numbers: {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} and rename to '{AUTO_COMBINED_ROW_NAME}'",
-                value=True,
-                key="auto_combine_rows_toggle_specific"
-            )
-
-            if auto_combine_toggle:
-                df_temp_combine = st.session_state.current_df_specific.copy()
-                df_temp_combine['Order_numeric_combine'] = pd.to_numeric(df_temp_combine['Order'], errors='coerce')
-
-                indices_to_combine = df_temp_combine[df_temp_combine['Order_numeric_combine'].isin(ROWS_TO_AUTO_COMBINE)].index.tolist()
-
-                if len(indices_to_combine) >= 2:
-                    st.session_state.history_specific.append(st.session_state.current_df_specific.copy()) # Save current state
-
-                    combined_row_data = {}
-                    selected_df_for_auto_combine = st.session_state.current_df_specific.loc[indices_to_combine]
-
-                    for col_idx, col in enumerate(st.session_state.current_df_specific.columns):
-                        if pd.api.types.is_numeric_dtype(st.session_state.current_df_specific[col]):
-                            combined_row_data[col] = selected_df_for_auto_combine[col].sum()
-                        else:
-                            joined_value = " / ".join(selected_df_for_auto_combine[col].dropna().astype(str).tolist())
-                            combined_row_data[col] = joined_value
-                    
-                    if st.session_state.current_df_specific.columns[0] != 'Order':
-                        combined_row_data[st.session_state.current_df_specific.columns[0]] = AUTO_COMBINED_ROW_NAME
-                    elif len(st.session_state.current_df_specific.columns) > 1:
-                        first_non_order_col = next((col for col in st.session_state.current_df_specific.columns if col != 'Order'), None)
-                        if first_non_order_col:
-                            combined_row_data[first_non_order_col] = AUTO_COMBINED_ROW_NAME
-
-                    combined_df_new = pd.DataFrame([combined_row_data], columns=st.session_state.current_df_specific.columns)
-                    
-                    remaining_df = st.session_state.current_df_specific.drop(index=indices_to_combine).reset_index(drop=True)
-                    st.session_state.current_df_specific = pd.concat([remaining_df, combined_df_new], ignore_index=True)
-                    
-                    st.success(f"Automatically combined rows with Order {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} into '{AUTO_COMBINED_ROW_NAME}'.")
-                    st.rerun()
                 else:
-                    st.warning(f"Could not auto-combine. Found {len(indices_to_combine)} row(s) with order numbers {', '.join(map(str, ROWS_TO_AUTO_COMBINE))}. At least 2 are required to combine.")
+                    st.info("No rows to remove based on automatic filter settings.")
             st.markdown("---")
+
+            # --- Automatic Row Combination ---
+            if not st.session_state.current_df_specific.empty and 'Order' in st.session_state.current_df_specific.columns and len(ROWS_TO_AUTO_COMBINE) > 1:
+                st.markdown("### 🔗 Automatic Row Combination")
+                auto_combine_toggle = st.checkbox(
+                    f"Automatically combine rows with 'Order' numbers: {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} and rename to '{AUTO_COMBINED_ROW_NAME}'",
+                    value=True,
+                    key="auto_combine_rows_toggle_specific"
+                )
+
+                if auto_combine_toggle:
+                    df_temp_combine = st.session_state.current_df_specific.copy()
+                    df_temp_combine['Order_numeric_combine'] = pd.to_numeric(df_temp_combine['Order'], errors='coerce')
+
+                    indices_to_combine = df_temp_combine[df_temp_combine['Order_numeric_combine'].isin(ROWS_TO_AUTO_COMBINE)].index.tolist()
+
+                    if len(indices_to_combine) >= 2:
+                        # No need to save to history here if it's part of initial auto-processing
+                        # st.session_state.history_specific.append(st.session_state.current_df_specific.copy()) 
+
+                        combined_row_data = {}
+                        selected_df_for_auto_combine = st.session_state.current_df_specific.loc[indices_to_combine]
+
+                        for col_idx, col in enumerate(st.session_state.current_df_specific.columns):
+                            if pd.api.types.is_numeric_dtype(st.session_state.current_df_specific[col]):
+                                combined_row_data[col] = selected_df_for_auto_combine[col].sum()
+                            else:
+                                joined_value = " / ".join(selected_df_for_auto_combine[col].dropna().astype(str).tolist())
+                                combined_row_data[col] = joined_value
+                            
+                        if st.session_state.current_df_specific.columns[0] != 'Order':
+                            combined_row_data[st.session_state.current_df_specific.columns[0]] = AUTO_COMBINED_ROW_NAME
+                        elif len(st.session_state.current_df_specific.columns) > 1:
+                            first_non_order_col = next((col for col in st.session_state.current_df_specific.columns if col != 'Order'), None)
+                            if first_non_order_col:
+                                combined_row_data[first_non_order_col] = AUTO_COMBINED_ROW_NAME
+
+                        combined_df_new = pd.DataFrame([combined_row_data], columns=st.session_state.current_df_specific.columns)
+                        
+                        remaining_df = st.session_state.current_df_specific.drop(index=indices_to_combine).reset_index(drop=True)
+                        st.session_state.current_df_specific = pd.concat([remaining_df, combined_df_new], ignore_index=True)
+                        
+                        st.success(f"Automatically combined rows with Order {', '.join(map(str, ROWS_TO_AUTO_COMBINE))} into '{AUTO_COMBINED_ROW_NAME}'.")
+                    else:
+                        st.warning(f"Could not auto-combine. Found {len(indices_to_combine)} row(s) with order numbers {', '.join(map(str, ROWS_TO_AUTO_COMBINE))}. At least 2 are required to combine.")
+                st.markdown("---")
+            
+            # Set the flag to true after applying auto-processing for the first time
+            st.session_state.auto_processing_applied = True
+            st.rerun() # Rerun once all auto-processing is done to display the final state
 
         # --- Display and Editing UI ---
         if not st.session_state.current_df_specific.empty:
             st.subheader("✏️ Review and Edit Table (Directly in Table)")
             st.info("You can directly edit cells in the table. To reorder rows, edit the numbers in the 'Order' column. To delete a row, click the 'X' button on the right of the row.")
 
-            # Ensure 'Order' column is numeric for proper sorting and data editor
             st.session_state.current_df_specific['Order'] = pd.to_numeric(st.session_state.current_df_specific['Order'], errors='coerce').fillna(0).astype(int)
 
             edited_df_specific = st.data_editor(
                 st.session_state.current_df_specific,
-                num_rows="dynamic", # Allows adding/deleting rows directly in the editor
+                num_rows="dynamic",
                 use_container_width=True,
                 column_config={
                     "Order": st.column_config.NumberColumn(
@@ -271,16 +271,17 @@ if uploaded_file is not None:
                         format="%d"
                     )
                 },
-                key="main_data_editor_specific" # Unique key for the data editor
+                key="main_data_editor_specific"
             )
 
             # Check if edited_df is different from current_df
-            # This triggers a history save and success message
             if not edited_df_specific.equals(st.session_state.current_df_specific):
                 st.session_state.history_specific.append(st.session_state.current_df_specific.copy())
                 st.session_state.current_df_specific = edited_df_specific.copy()
                 st.success("Changes detected. Apply order or continue editing.")
-                st.rerun() # Rerun to reflect changes immediately and prevent edit conflicts
+                # No st.rerun() here as data_editor inherently reruns on change
+                # But it's also okay if you want to explicitly rerun for immediate feedback.
+                # However, removing it here might prevent an extra rerun loop.
 
             if st.button("Apply Manual Row Order Changes", key="apply_order_specific_manual"):
                 if 'Order' in st.session_state.current_df_specific.columns:
@@ -295,15 +296,8 @@ if uploaded_file is not None:
                 else:
                     st.warning("No 'Order' column found to reorder rows.")
             
-            # Remove the manual combine and merge sections
-            # st.subheader("🔗 Combine Rows Manually")
-            # st.subheader("🧬 Merge Columns")
-            # st.button("Undo Last Action") is also removed
-
             st.subheader("📋 Final Processed Table")
-            # Display the final, non-all-NA rows of the table
             final_df_specific = st.session_state.current_df_specific.dropna(how="all").reset_index(drop=True)
-            # --- Remove 'Order' column for final display and download ---
             if 'Order' in final_df_specific.columns:
                 final_df_specific = final_df_specific.drop(columns=['Order'])
             st.dataframe(final_df_specific, use_container_width=True)
@@ -318,8 +312,7 @@ if uploaded_file is not None:
                 output.seek(0)
                 return output
 
-            # Generate Excel data for download
-            excel_data_specific = to_excel_specific(final_df_specific) # Use the df *without* the 'Order' column
+            excel_data_specific = to_excel_specific(final_df_specific)
             st.download_button(
                 "Download Processed Table as Excel",
                 data=excel_data_specific,
@@ -329,12 +322,13 @@ if uploaded_file is not None:
             )
 
         else:
-            st.info("No data found for the predefined range. Please check your Excel file or the predefined range settings.")
+            # This 'else' branch is likely hit when df_initial is empty, and then no further processing occurs.
+            # The message is now moved to the initialization block.
+            pass
 
     except Exception as e:
         st.error(f"An unexpected error occurred while processing the Excel file: {e}")
-        st.exception(e) # Display full traceback for debugging
+        st.exception(e)
         st.info("Please ensure it's a valid Excel file with readable content and try again.")
 else:
     st.info("Please upload your Excel file to begin processing.")
-
